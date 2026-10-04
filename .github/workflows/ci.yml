@@ -1,0 +1,32 @@
+name: macOS tests and builds
+on: [push, pull_request, workflow_dispatch]
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            developer: /Applications/Xcode_16.2.app/Contents/Developer
+          - os: macos-15-intel
+            developer: /Applications/Xcode.app/Contents/Developer
+          - os: macos-26
+            developer: /Applications/Xcode.app/Contents/Developer
+    runs-on: ${{ matrix.os }}
+    env:
+      DEVELOPER_DIR: ${{ matrix.developer }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Host and toolchain
+        run: |
+          sw_vers
+          uname -m
+          swift --version
+      - run: swift test
+      - run: bash script/build_and_run.sh build
+      - run: codesign --verify --deep --strict dist/PurrCore.app

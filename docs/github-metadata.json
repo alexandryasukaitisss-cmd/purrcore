@@ -1,0 +1,9 @@
+{
+  "name": "purrcore",
+  "description": "Native macOS resource monitor with a running pet, readable process groups, local history, awake-time tracking, and read-only SSD health.",
+  "description_ru": "Нативный монитор ресурсов macOS: свой бегущий питомец, понятные процессы, локальная история, бодрствование и показатели здоровья SSD.",
+  "topics": ["macos", "swift", "swiftui", "appkit", "menu-bar", "system-monitor", "resource-monitor", "cpu-monitor", "battery-monitor", "ssd", "sqlite", "runcat", "pet", "local-first"],
+  "license": "Apache-2.0",
+  "readme": "README.md",
+  "readme_ru": "README.ru.md"
+}

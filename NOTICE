@@ -1,0 +1,22 @@
+PurrCore
+Copyright 2026 PurrCore contributors
+
+The layer-based running-animation approach was adapted from:
+
+RunCat — https://github.com/Kyome22/menubar_runcat
+AppDelegate.swift: Copyright 2018 Kyome.
+Licensed under the Apache License, Version 2.0.
+
+RunCatNeo — https://github.com/runcat-dev/RunCatNeo
+RunnerLayer.swift: Copyright 2026 Takuto Nakamura.
+Repository license: Copyright 2019 Kyome.
+Licensed under the Apache License, Version 2.0.
+
+PurrCore modifies animation timing, CPU speed policy, sizing, resource loading,
+and custom-pet import. Upstream runner artwork is not distributed.
+
+StillCore — https://stillcore.app/ — is a product inspiration.
+No StillCore code or artwork is distributed.
+
+Bundled cat artwork was generated for PurrCore. Original reference photos
+are excluded. User-imported photos and animations are not part of this license grant.

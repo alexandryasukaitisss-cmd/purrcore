@@ -24,7 +24,8 @@ SwiftUI + AppKit, нативные системные API и SQLite. Отдел�
 
 ## Сборка и запуск
 
-Нужны macOS 14+ и Swift 6. Проверено на Mac с Apple Silicon; работа на Intel ещё не проверена.
+Нужны macOS 14+ и Swift 6. Автоматические сборки и тесты прошли на macOS 14 (Apple Silicon), macOS 15 (Intel) и macOS 26 (Apple Silicon).
+Настоящий интерфейс проверен на Apple Silicon; интерфейс на Intel ещё не проверен.
 
 ```bash
 swift test

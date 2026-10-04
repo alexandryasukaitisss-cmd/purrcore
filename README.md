@@ -24,7 +24,8 @@ The interface follows the system language: Russian or English. Both READMEs desc
 
 ## Build and run
 
-Requires macOS 14+ and a Swift 6 toolchain. Tested on an Apple Silicon Mac; Intel hardware has not been verified.
+Requires macOS 14+ and a Swift 6 toolchain. CI builds and tests on macOS 14 (Apple Silicon), macOS 15 (Intel) and macOS 26 (Apple Silicon).
+Rendered UI checks were performed on Apple Silicon; the Intel UI has not been checked.
 
 ```bash
 swift test

@@ -6,7 +6,7 @@
 - [x] Russian/English localization and named accessibility labels implemented. English settings inspected in the rendered app.
 - [x] Battery retention defaults to indefinite storage; boundary and active-session behavior tested. The rendered confirmation and cancellation were checked in an isolated data directory.
 - [ ] Verify retention apply and restart, both appearances, VoiceOver and system Reduce Motion in the rendered app.
-- [ ] Run the prepared CI on the declared macOS and Intel runners.
+- [x] CI tests, release builds and signature verification pass on macOS 14, macOS 15 Intel and macOS 26.
 - [ ] Benchmark CPU, memory and energy with default and imported animations.
 - [ ] Sign with Developer ID Application, notarize and check installation on a clean Mac. An ad-hoc build is not notarized.
 - [ ] Generate and import a new pet animation through an available Codex image tool. The prepared-frame import test does not verify fresh generation or animal resemblance.

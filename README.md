@@ -1,11 +1,16 @@
 # PurrCore
 
+[![CI](https://github.com/alexandryasukaitisss-cmd/purrcore/actions/workflows/ci.yml/badge.svg)](https://github.com/alexandryasukaitisss-cmd/purrcore/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alexandryasukaitisss-cmd/purrcore)](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 [Русский](README.ru.md) · English
 
-PurrCore helps you notice Mac load at a glance: your menu-bar pet runs faster when the CPU is busy.
-Open the monitor to understand which apps and system processes create that load, and see how it changed over time.
-Plain-language process explanations and a compact, seven-day local history are the core idea; old resource records expire automatically.
+PurrCore is a native macOS menu bar system monitor (**RunCat alternative** for Apple Silicon & macOS 14+): your menu-bar pet runs faster when the CPU is busy, while idle overhead stays at `0.0–0.1% CPU` and `~25 MB RAM`.
+Open the popover to see per-core CPU activity, plain-English explanations of ~65 macOS processes, Activity Monitor-aligned RAM/Swap history, awake time, and read-only SSD SMART health.
 Your pet can be a cat, dog, bird, or any other animal.
+
+![PurrCore running pet, per-core CPU, and readable process groups](docs/screenshots/purrcore-demo.gif)
 
 ![Custom pet settings](docs/screenshots/settings.png)
 
@@ -22,9 +27,25 @@ Your pet can be a cat, dog, bird, or any other animal.
 SwiftUI + AppKit, native system APIs, and SQLite. No separate daemon or third-party runtime packages.
 The interface follows the system language: Russian or English. Both READMEs describe the same features.
 
-## Build and run
+## Install or build
 
-Requires macOS 14+ and a Swift 6 toolchain. Tested on an Apple Silicon Mac; Intel hardware has not been verified.
+### Option 1: Homebrew Cask (macOS 14+, Apple Silicon)
+
+```bash
+brew install --cask alexandryasukaitisss-cmd/tap/purrcore
+```
+
+### Option 2: Download prebuilt archive
+
+Download `PurrCore-0.5.0-macos-arm64.zip` from [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), unzip, move `PurrCore.app` to `/Applications`, and run once if macOS blocks an ad-hoc signed build:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/PurrCore.app
+```
+
+### Option 3: Build from source
+
+Requires macOS 14+ and a Swift 6 toolchain. Tested on Apple Silicon and Intel CI runners.
 
 ```bash
 swift test

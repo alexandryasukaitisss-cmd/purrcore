@@ -1,11 +1,16 @@
 # PurrCore
 
+[![CI](https://github.com/alexandryasukaitisss-cmd/purrcore/actions/workflows/ci.yml/badge.svg)](https://github.com/alexandryasukaitisss-cmd/purrcore/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/alexandryasukaitisss-cmd/purrcore)](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+
 Русский · [English](README.md)
 
-PurrCore помогает одним взглядом заметить нагрузку на Mac: питомец в строке меню бежит быстрее, когда процессор занят.
-Открой монитор, чтобы понять, какие приложения и системные процессы создают нагрузку, и посмотреть, как она менялась.
-Понятные объяснения процессов и компактная локальная история на семь дней — основа проекта; старые записи ресурсов удаляются автоматически.
+PurrCore — нативный монитор ресурсов macOS в строке меню (**альтернатива RunCat** для Apple Silicon и macOS 14+): питомец бежит быстрее при росте нагрузки CPU, а фон приложения держится около `0.0–0.1% CPU` и `~25 МБ RAM`.
+Открой панель, чтобы увидеть загрузку по ядрам, понятные объяснения ~65 процессов macOS, память и Swap как в Мониторинге системы, время работы без сна и здоровье SSD (SMART).
 Питомец может быть любым: кошка, собака, птица или другое животное.
+
+![PurrCore: бегущий питомец, загрузка по ядрам и понятные процессы](docs/screenshots/purrcore-demo.gif)
 
 ![Настройки своего питомца](docs/screenshots/settings.png)
 
@@ -22,9 +27,25 @@ PurrCore помогает одним взглядом заметить нагр�
 SwiftUI + AppKit, нативные системные API и SQLite. Отдельный демон и сторонние пакеты для работы не нужны.
 Интерфейс выбирает русский или английский по языку системы. Оба README описывают одинаковые возможности.
 
-## Сборка и запуск
+## Установка или сборка
 
-Нужны macOS 14+ и Swift 6. Проверено на Mac с Apple Silicon; работа на Intel ещё не проверена.
+### Вариант 1: Homebrew Cask (macOS 14+, Apple Silicon)
+
+```bash
+brew install --cask alexandryasukaitisss-cmd/tap/purrcore
+```
+
+### Вариант 2: Готовый архив из GitHub Releases
+
+Скачай `PurrCore-0.5.0-macos-arm64.zip` из [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), распакуй, перенеси `PurrCore.app` в `/Applications` и при предупреждении Gatekeeper выполни один раз:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/PurrCore.app
+```
+
+### Вариант 3: Сборка из исходников
+
+Нужны macOS 14+ и Swift 6. Сборка и тесты проверяются в CI на Apple Silicon и Intel.
 
 ```bash
 swift test

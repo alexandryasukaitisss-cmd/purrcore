@@ -9,6 +9,9 @@ struct MenuPanel: View {
     let onOpenSettings: () -> Void
     let onQuit: () -> Void
 
+    @AppStorage(AppDefaults.animationEnabled) private var animationEnabled = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private var topProcesses: [ProcessGroupSample] {
         Array(model.snapshot.processes.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(5))
     }
@@ -23,26 +26,39 @@ struct MenuPanel: View {
             Divider()
             footer
         }
-        .frame(width: 370)
+        .frame(width: 376)
         .background(.ultraThinMaterial)
     }
 
     private var header: some View {
         HStack(spacing: 12) {
-            PetFrameImage(frame: model.catFrameIndex, animation: model.petAnimation)
-                .frame(width: 62, height: 48)
+            AnimatedPetView(
+                cpuPercent: model.snapshot.cpuPercent,
+                animationEnabled: animationEnabled,
+                reduceMotion: reduceMotion,
+                customFrames: model.petAnimation
+            )
+            .frame(width: 76, height: 38)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("PurrCore")
                     .font(.headline)
                 Text(tr("питомец бежит в темпе нагрузки"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
-            Spacer()
-            Text(MetricFormat.percent(model.snapshot.cpuPercent))
-                .font(.system(.title2, design: .rounded, weight: .semibold))
-                .monospacedDigit()
+            Spacer(minLength: 6)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(MetricFormat.percent(model.snapshot.cpuPercent))
+                    .font(.system(.title2, design: .rounded, weight: .semibold))
+                    .monospacedDigit()
+                CoreLoadStrip(
+                    perCoreCPU: model.snapshot.perCoreCPU,
+                    coreCount: model.snapshot.coreCount,
+                    compact: true
+                )
+            }
         }
         .padding(16)
     }
@@ -62,7 +78,20 @@ struct MenuPanel: View {
                 }
             }
 
-            MemoryBar(memory: model.snapshot.memory)
+            VStack(spacing: 5) {
+                MemoryBar(memory: model.snapshot.memory)
+                if model.snapshot.memory.swapUsedBytes > 0 {
+                    HStack {
+                        Text("Swap")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(MetricFormat.bytes(model.snapshot.memory.swapUsedBytes))
+                            .foregroundStyle(.pink)
+                    }
+                    .font(.caption2)
+                    .monospacedDigit()
+                }
+            }
 
             if let ssd = model.ssd {
                 VStack(spacing: 6) {
@@ -179,7 +208,7 @@ struct MenuPanel: View {
                     .padding(.vertical, 12)
             } else {
                 ForEach(topProcesses) { process in
-                    ProcessCompactRow(process: process)
+                    ProcessCompactRow(process: process, totalCores: model.snapshot.coreCount)
                 }
             }
         }
@@ -209,6 +238,63 @@ struct MenuPanel: View {
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .padding(14)
+    }
+}
+
+struct CoreLoadStrip: View {
+    let perCoreCPU: [Double]
+    let coreCount: Int
+    var compact: Bool = true
+
+    private var sortedLoads: [Double] {
+        if perCoreCPU.isEmpty {
+            return Array(repeating: 0, count: max(coreCount, 1))
+        }
+        return perCoreCPU.sorted(by: >)
+    }
+
+    private var totalCores: Int {
+        max(perCoreCPU.count, max(coreCount, 1))
+    }
+
+    private var busyCores: Int {
+        sortedLoads.filter { $0 >= 35 }.count
+    }
+
+    var body: some View {
+        let loads = sortedLoads
+        let pillWidth: CGFloat = compact ? (loads.count > 14 ? 3 : 4) : (loads.count > 16 ? 6 : 8)
+        let pillHeight: CGFloat = compact ? 9 : 18
+        let spacing: CGFloat = compact ? (loads.count > 14 ? 1.5 : 2) : 3
+
+        HStack(spacing: compact ? 5 : 8) {
+            HStack(spacing: spacing) {
+                ForEach(Array(loads.enumerated()), id: \.offset) { _, load in
+                    if compact {
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(MetricFormat.coreLoadColor(load).opacity(load >= 35 ? 0.95 : 0.72))
+                            .frame(width: pillWidth, height: pillHeight)
+                    } else {
+                        ZStack(alignment: .bottom) {
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .fill(Color.secondary.opacity(0.16))
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .fill(MetricFormat.coreLoadColor(load))
+                                .frame(height: max(3, pillHeight * min(max(load / 100, 0), 1)))
+                        }
+                        .frame(width: pillWidth, height: pillHeight)
+                        .help(MetricFormat.percent(load))
+                    }
+                }
+            }
+            Text("(\(busyCores)/\(totalCores))")
+                .font(compact ? .caption2 : .caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tr("Загружено %@ из %@ ядер", String(describing: busyCores), String(describing: totalCores)))
+        .help(tr("Активных ядер: %@ из %@ (красные ≥70%, оранжевые 35–69%, зелёные <35%)", String(describing: busyCores), String(describing: totalCores)))
     }
 }
 
@@ -273,6 +359,7 @@ struct CapacityBar: View {
 
 struct ProcessCompactRow: View {
     let process: ProcessGroupSample
+    let totalCores: Int
 
     var body: some View {
         HStack(spacing: 9) {
@@ -296,5 +383,6 @@ struct ProcessCompactRow: View {
                 .frame(width: 68, alignment: .trailing)
         }
         .font(.callout)
+        .help(MetricFormat.processCPU(process, totalCores: totalCores))
     }
 }

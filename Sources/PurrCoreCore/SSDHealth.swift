@@ -399,10 +399,19 @@ private struct DiskutilRunner: Sendable {
         } catch {
             throw SSDHealthReaderError.commandFailed(error.localizedDescription)
         }
-        process.waitUntilExit()
+        // Drain stderr concurrently while reading stdout before waiting to avoid pipe deadlocks.
+        let group = DispatchGroup()
+        var errorData = Data()
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            errorData = error.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
         let data = output.fileHandleForReading.readDataToEndOfFile()
+        group.wait()
+        process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            let message = String(data: error.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "diskutil завершился с ошибкой"
+            let message = String(data: errorData, encoding: .utf8) ?? "diskutil завершился с ошибкой"
             throw SSDHealthReaderError.commandFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return String(data: data, encoding: .utf8) ?? ""

@@ -97,6 +97,29 @@ final class PetAnimationStoreTests: XCTestCase {
         XCTAssertEqual(Double(try centerPixel(frames[1])[3]), 127.5, accuracy: 5)
     }
 
+    func testFaintNoisePixelsDoNotExpandSharedTrimBounds() throws {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: 1_024, height: 128, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        // Paint a single faint alpha=3 stray pixel in the top-left corner of frame 0
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 3.0 / 255.0))
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+        // Paint actual opaque pet sprites centered in each frame
+        context.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
+        for index in 0..<8 {
+            context.fill(CGRect(x: index * 128 + 32, y: 32, width: 64, height: 40))
+        }
+        let image = try XCTUnwrap(context.makeImage())
+        let url = root.appendingPathComponent("noisy-strip.png")
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let frames = try store.importAnimation(from: url)
+        XCTAssertEqual(frames.map(\.width), Array(repeating: 64, count: 8))
+        XCTAssertEqual(frames.map(\.height), Array(repeating: 40, count: 8))
+    }
+
     private func fixture(width: Int, height: Int) throws -> URL {
         let context = try XCTUnwrap(CGContext(
             data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,

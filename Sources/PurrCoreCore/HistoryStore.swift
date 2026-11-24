@@ -18,7 +18,7 @@ public enum HistoryStoreError: Error, LocalizedError {
 public actor HistoryStore {
     private let database: OpaquePointer
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    private static let currentSchemaVersion = 1
+    private static let currentSchemaVersion = 2
 
     public init(url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -47,9 +47,10 @@ public actor HistoryStore {
         let sql = """
         INSERT OR REPLACE INTO system_samples (
             timestamp, cpu_percent, memory_used_bytes,
+            swap_used_bytes, memory_pressure,
             network_download_bps, network_upload_bps,
             disk_read_bps, disk_write_bps, thermal_state
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
@@ -57,11 +58,13 @@ public actor HistoryStore {
         sqlite3_bind_double(statement, 1, sample.timestamp.timeIntervalSince1970)
         sqlite3_bind_double(statement, 2, sample.cpuPercent)
         sqlite3_bind_int64(statement, 3, Int64(clamping: sample.memory.usedBytes))
-        sqlite3_bind_double(statement, 4, sample.network.downloadBytesPerSecond)
-        sqlite3_bind_double(statement, 5, sample.network.uploadBytesPerSecond)
-        sqlite3_bind_double(statement, 6, sample.disk.downloadBytesPerSecond)
-        sqlite3_bind_double(statement, 7, sample.disk.uploadBytesPerSecond)
-        bind(sample.thermalState.rawValue, to: 8, in: statement)
+        sqlite3_bind_int64(statement, 4, Int64(clamping: sample.memory.swapUsedBytes))
+        bind(sample.memory.pressure.rawValue, to: 5, in: statement)
+        sqlite3_bind_double(statement, 6, sample.network.downloadBytesPerSecond)
+        sqlite3_bind_double(statement, 7, sample.network.uploadBytesPerSecond)
+        sqlite3_bind_double(statement, 8, sample.disk.downloadBytesPerSecond)
+        sqlite3_bind_double(statement, 9, sample.disk.uploadBytesPerSecond)
+        bind(sample.thermalState.rawValue, to: 10, in: statement)
         try stepDone(statement)
     }
 
@@ -296,7 +299,11 @@ public actor HistoryStore {
         sqlite3_bind_double(usageStatement, 1, cutoff.timeIntervalSince1970)
         try stepDone(usageStatement)
         sqlite3_finalize(usageStatement)
-        try execute("PRAGMA wal_checkpoint(PASSIVE);")
+        try execute("PRAGMA wal_checkpoint(TRUNCATE);")
+    }
+
+    public func checkpointAndTruncate() throws {
+        try execute("PRAGMA wal_checkpoint(TRUNCATE);")
     }
 
     /// Only completed sessions expire. The active discharge is always preserved.
@@ -315,6 +322,8 @@ public actor HistoryStore {
         SELECT
             MIN(CAST((timestamp - ?) / ? AS INTEGER), ? - 1) AS bucket,
             AVG(cpu_percent), AVG(memory_used_bytes),
+            AVG(swap_used_bytes),
+            MAX(CASE memory_pressure WHEN 'critical' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END),
             AVG(network_download_bps), AVG(network_upload_bps),
             AVG(disk_read_bps), AVG(disk_write_bps)
         FROM system_samples
@@ -340,10 +349,12 @@ public actor HistoryStore {
                     timestamp: Date(timeIntervalSince1970: min(max(bucketTimestamp, since.timeIntervalSince1970), until.timeIntervalSince1970)),
                     cpuPercent: sqlite3_column_double(statement, 1),
                     memoryUsedBytes: UInt64(max(sqlite3_column_int64(statement, 2), 0)),
-                    networkDownloadBytesPerSecond: sqlite3_column_double(statement, 3),
-                    networkUploadBytesPerSecond: sqlite3_column_double(statement, 4),
-                    diskReadBytesPerSecond: sqlite3_column_double(statement, 5),
-                    diskWriteBytesPerSecond: sqlite3_column_double(statement, 6)
+                    swapUsedBytes: UInt64(max(sqlite3_column_int64(statement, 3), 0)),
+                    memoryPressure: .fromSeverity(Int(sqlite3_column_int(statement, 4))),
+                    networkDownloadBytesPerSecond: sqlite3_column_double(statement, 5),
+                    networkUploadBytesPerSecond: sqlite3_column_double(statement, 6),
+                    diskReadBytesPerSecond: sqlite3_column_double(statement, 7),
+                    diskWriteBytesPerSecond: sqlite3_column_double(statement, 8)
                 )
             )
         }
@@ -390,20 +401,46 @@ public actor HistoryStore {
         return markers
     }
 
-    public func loadTopProcessGroups(since: Date, limit: Int = 12) throws -> [ProcessGroupSample] {
+    public func loadTopProcessGroups(
+        since: Date,
+        until: Date = .now,
+        sortBy: ProcessHistorySort = .cpu,
+        limit: Int = 12
+    ) throws -> [ProcessGroupSample] {
+        let slotStatement = try prepare("""
+        SELECT COUNT(DISTINCT timestamp)
+        FROM process_samples
+        WHERE timestamp >= ? AND timestamp <= ?;
+        """)
+        defer { sqlite3_finalize(slotStatement) }
+        sqlite3_bind_double(slotStatement, 1, since.timeIntervalSince1970)
+        sqlite3_bind_double(slotStatement, 2, until.timeIntervalSince1970)
+        let totalSlots: Double
+        if sqlite3_step(slotStatement) == SQLITE_ROW {
+            totalSlots = Double(max(sqlite3_column_int64(slotStatement, 0), 1))
+        } else {
+            totalSlots = 1
+        }
+
+        let orderClause = sortBy == .memory
+            ? "MAX(resident_bytes) DESC, SUM(cpu_percent) DESC"
+            : "SUM(cpu_percent) DESC, MAX(resident_bytes) DESC"
+
         let sql = """
         SELECT group_key, MAX(display_name), MAX(explanation), MAX(category),
-               AVG(cpu_percent), MAX(resident_bytes), MAX(process_count)
+               SUM(cpu_percent) / ?, MAX(resident_bytes), MAX(process_count)
         FROM process_samples
-        WHERE timestamp >= ?
+        WHERE timestamp >= ? AND timestamp <= ?
         GROUP BY group_key
-        ORDER BY AVG(cpu_percent) DESC
+        ORDER BY \(orderClause)
         LIMIT ?;
         """
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
-        sqlite3_bind_double(statement, 1, since.timeIntervalSince1970)
-        sqlite3_bind_int(statement, 2, Int32(max(limit, 1)))
+        sqlite3_bind_double(statement, 1, totalSlots)
+        sqlite3_bind_double(statement, 2, since.timeIntervalSince1970)
+        sqlite3_bind_double(statement, 3, until.timeIntervalSince1970)
+        sqlite3_bind_int(statement, 4, Int32(max(limit, 1)))
 
         var samples: [ProcessGroupSample] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -454,6 +491,8 @@ public actor HistoryStore {
             timestamp REAL PRIMARY KEY,
             cpu_percent REAL NOT NULL,
             memory_used_bytes INTEGER NOT NULL,
+            swap_used_bytes INTEGER NOT NULL DEFAULT 0,
+            memory_pressure TEXT NOT NULL DEFAULT 'normal',
             network_download_bps REAL NOT NULL,
             network_upload_bps REAL NOT NULL,
             disk_read_bps REAL NOT NULL,
@@ -502,6 +541,13 @@ public actor HistoryStore {
         );
         CREATE INDEX IF NOT EXISTS battery_sessions_last_observed_idx ON battery_sessions(last_observed_at);
         """)
+            let columns = tableColumns(on: database, table: "system_samples")
+            if !columns.contains("swap_used_bytes") {
+                try execute(on: database, sql: "ALTER TABLE system_samples ADD COLUMN swap_used_bytes INTEGER NOT NULL DEFAULT 0;")
+            }
+            if !columns.contains("memory_pressure") {
+                try execute(on: database, sql: "ALTER TABLE system_samples ADD COLUMN memory_pressure TEXT NOT NULL DEFAULT 'normal';")
+            }
             if version < currentSchemaVersion {
                 try execute(on: database, sql: "PRAGMA user_version = \(currentSchemaVersion);")
             }
@@ -510,6 +556,20 @@ public actor HistoryStore {
             try? execute(on: database, sql: "ROLLBACK;")
             throw error
         }
+    }
+
+    private static func tableColumns(on database: OpaquePointer, table: String) -> Set<String> {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(\(table));", -1, &statement, nil) == SQLITE_OK,
+              let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+        var columns: Set<String> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = sqlite3_column_text(statement, 1).map({ String(cString: $0) }) {
+                columns.insert(name)
+            }
+        }
+        return columns
     }
 
     private static func execute(on database: OpaquePointer, sql: String) throws {

@@ -7,6 +7,29 @@ enum MetricFormat {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .memory)
     }
 
+    static func shortBytes(_ value: UInt64) -> String {
+        let doubleValue = Double(value)
+        let gigabyte = 1_073_741_824.0
+        let megabyte = 1_048_576.0
+        let kilobyte = 1_024.0
+        if doubleValue >= gigabyte {
+            let amount = doubleValue / gigabyte
+            let formatted = amount.formatted(.number.precision(.fractionLength(amount >= 10 ? 0 : 1)))
+            return tr("%@ ГБ", formatted)
+        }
+        if doubleValue >= megabyte {
+            let amount = doubleValue / megabyte
+            let formatted = amount.formatted(.number.precision(.fractionLength(0)))
+            return tr("%@ МБ", formatted)
+        }
+        if doubleValue >= kilobyte {
+            let amount = doubleValue / kilobyte
+            let formatted = amount.formatted(.number.precision(.fractionLength(0)))
+            return tr("%@ КБ", formatted)
+        }
+        return tr("%@ Б", String(describing: value))
+    }
+
     static func rate(_ value: Double) -> String {
         tr("%@/с", String(describing: bytes(UInt64(max(value, 0)))))
     }
@@ -28,6 +51,24 @@ enum MetricFormat {
 
     static func percent(_ value: Double) -> String {
         value.formatted(.number.precision(.fractionLength(value >= 10 ? 0 : 1))) + "%"
+    }
+
+    static func axisPercent(_ value: Double) -> String {
+        "\(Int(max(value, 0).rounded()))%"
+    }
+
+    static func processCPU(_ sample: ProcessGroupSample, totalCores: Int) -> String {
+        let base = percent(sample.cpuPercent)
+        let cores = sample.equivalentCores(totalCores: totalCores)
+        guard cores >= 0.1 else { return base }
+        let formattedCores = cores.formatted(.number.precision(.fractionLength(cores >= 10 ? 0 : 1)))
+        return tr("%@ (%@ яд.)", base, formattedCores)
+    }
+
+    static func coreLoadColor(_ percent: Double) -> Color {
+        if percent >= 70 { return .red }
+        if percent >= 35 { return .orange }
+        return .green
     }
 
     static func duration(_ seconds: TimeInterval) -> String {

@@ -21,11 +21,21 @@ private struct MarkerOptions {
 private struct LiveMemory: Encodable {
     var usedBytes: UInt64
     var totalBytes: UInt64
+    var appBytes: UInt64
+    var wiredBytes: UInt64
+    var compressedBytes: UInt64
+    var cachedBytes: UInt64
+    var swapUsedBytes: UInt64
     var pressure: String
 
     enum CodingKeys: String, CodingKey {
         case usedBytes = "used_bytes"
         case totalBytes = "total_bytes"
+        case appBytes = "app_bytes"
+        case wiredBytes = "wired_bytes"
+        case compressedBytes = "compressed_bytes"
+        case cachedBytes = "cached_bytes"
+        case swapUsedBytes = "swap_used_bytes"
         case pressure
     }
 }
@@ -45,6 +55,7 @@ private struct LiveProcess: Encodable {
     var explanation: String
     var category: String
     var cpuPercent: Double
+    var equivalentCores: Double
     var residentBytes: UInt64
     var processCount: Int
 
@@ -53,6 +64,7 @@ private struct LiveProcess: Encodable {
         case explanation
         case category
         case cpuPercent = "cpu_percent"
+        case equivalentCores = "equivalent_cores"
         case residentBytes = "resident_bytes"
         case processCount = "process_count"
     }
@@ -61,6 +73,9 @@ private struct LiveProcess: Encodable {
 private struct LiveReport: Encodable {
     var timestamp: Date
     var cpuPercent: Double
+    var coreCount: Int
+    var busyCores: Int
+    var perCoreCPU: [Double]
     var memory: LiveMemory
     var networkBps: LiveNetworkBps
     var diskBps: LiveDiskBps
@@ -70,6 +85,9 @@ private struct LiveReport: Encodable {
     enum CodingKeys: String, CodingKey {
         case timestamp
         case cpuPercent = "cpu_percent"
+        case coreCount = "core_count"
+        case busyCores = "busy_cores"
+        case perCoreCPU = "per_core_cpu"
         case memory
         case networkBps = "network_bps"
         case diskBps = "disk_bps"
@@ -108,6 +126,7 @@ private struct TaskLoadReport: Encodable {
     var samples: Int
     var cpuPercent: ReportAvgMax
     var memoryUsedBytes: ReportAvgMax
+    var swapUsedBytes: ReportAvgMax
     var networkBps: ReportNetworkBps
     var diskBps: ReportDiskBps
 
@@ -116,8 +135,23 @@ private struct TaskLoadReport: Encodable {
         case samples
         case cpuPercent = "cpu_percent"
         case memoryUsedBytes = "memory_used_bytes"
+        case swapUsedBytes = "swap_used_bytes"
         case networkBps = "network_bps"
         case diskBps = "disk_bps"
+    }
+}
+
+private struct SSDCLIReport: Encodable {
+    var internalSSD: SSDHealthSnapshot?
+    var internalError: String?
+    var externalSSDs: [ExternalSSDHealthReport]
+    var externalError: String?
+
+    enum CodingKeys: String, CodingKey {
+        case internalSSD = "internal"
+        case internalError = "internal_error"
+        case externalSSDs = "external"
+        case externalError = "external_error"
     }
 }
 
@@ -134,9 +168,12 @@ struct PurrCoreCLI {
         }
     }
 
+    private static func openStore() throws -> HistoryStore {
+        try HistoryStore(url: RuntimePaths.historyDatabaseURL())
+    }
+
     private static func run(_ arguments: [String]) async throws -> Int32 {
         guard let command = arguments.first else { throw CLIError.usage("не указана команда") }
-        let store = try HistoryStore(url: RuntimePaths.historyDatabaseURL())
 
         switch command {
         case "live":
@@ -144,15 +181,67 @@ struct PurrCoreCLI {
             _ = await sampler.sample(includeProcesses: true)
             try? await Task.sleep(nanoseconds: 1_000_000_000)
             let snapshot = await sampler.sample(includeProcesses: true)
-            let data = try Self.jsonEncoder.encode(Self.liveReport(from: snapshot))
-            print(String(decoding: data, as: UTF8.self))
+            try printJSON(Self.liveReport(from: snapshot))
+            return 0
+
+        case "ssd":
+            let reader = SSDHealthReader()
+            var internalSSD: SSDHealthSnapshot?
+            var internalError: String?
+            do {
+                internalSSD = try reader.read()
+            } catch {
+                internalError = error.localizedDescription
+            }
+            var externalSSDs: [ExternalSSDHealthReport] = []
+            var externalError: String?
+            do {
+                externalSSDs = try reader.readExternalDisks()
+            } catch {
+                externalError = error.localizedDescription
+            }
+            try printJSON(SSDCLIReport(
+                internalSSD: internalSSD,
+                internalError: internalError,
+                externalSSDs: externalSSDs,
+                externalError: externalError
+            ))
+            return 0
+
+        case "history":
+            let store = try openStore()
+            let (rangeSeconds, maxPoints) = try parseHistoryOptions(Array(arguments.dropFirst()))
+            let now = Date()
+            let since = now.addingTimeInterval(-rangeSeconds)
+            let points = try await store.loadSystemHistory(since: since, until: now, maxPoints: maxPoints)
+            try printJSON(points)
+            return 0
+
+        case "top":
+            let store = try openStore()
+            let (sortBy, rangeSeconds, limit) = try parseTopOptions(Array(arguments.dropFirst()))
+            let now = Date()
+            let since = now.addingTimeInterval(-rangeSeconds)
+            let groups = try await store.loadTopProcessGroups(since: since, until: now, sortBy: sortBy, limit: limit)
+            try printJSON(groups)
+            return 0
+
+        case "usage":
+            let store = try openStore()
+            let now = Date()
+            let calendar = Calendar.autoupdatingCurrent
+            let since = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now))
+                ?? now.addingTimeInterval(-6 * 86_400)
+            let report = try await store.loadUsageReport(since: since, until: now, calendar: calendar)
+            try printJSON(report)
             return 0
 
         case "task":
+            let store = try openStore()
             guard arguments.count >= 2, let kind = TaskEventKind(rawValue: arguments[1]) else {
                 throw CLIError.usage("ожидалось: task begin|end")
             }
-            let options = try parseOptions(Array(arguments.dropFirst(2)))
+            let options = try parseMarkerOptions(Array(arguments.dropFirst(2)))
             try await store.addTaskMarker(marker(kind: kind, options: options))
             print("\(kind.rawValue) \(options.taskID) \(options.label)")
             if kind == .end {
@@ -161,10 +250,11 @@ struct PurrCoreCLI {
             return 0
 
         case "run":
+            let store = try openStore()
             guard let separator = arguments.firstIndex(of: "--") else {
                 throw CLIError.usage("для run нужен разделитель -- перед командой")
             }
-            let options = try parseOptions(Array(arguments[1..<separator]))
+            let options = try parseMarkerOptions(Array(arguments[1..<separator]))
             let childArguments = Array(arguments[(separator + 1)...])
             guard !childArguments.isEmpty else { throw CLIError.usage("после -- нет команды") }
 
@@ -188,11 +278,13 @@ struct PurrCoreCLI {
             return process.terminationStatus
 
         case "purge":
+            let store = try openStore()
             try await store.purge(olderThan: Date().addingTimeInterval(-604_800))
             print("история старше 7 дней удалена")
             return 0
 
         case "status":
+            let store = try openStore()
             let url = try RuntimePaths.historyDatabaseURL()
             let size = await store.databaseSizeBytes()
             print("database=\(url.path)")
@@ -204,7 +296,71 @@ struct PurrCoreCLI {
         }
     }
 
-    private static func parseOptions(_ arguments: [String]) throws -> MarkerOptions {
+    private static func parseRange(_ raw: String) throws -> TimeInterval {
+        switch raw.lowercased() {
+        case "1h", "hour": return 3_600
+        case "24h", "1d", "day": return 86_400
+        case "7d", "week": return 604_800
+        default:
+            throw CLIError.usage("неподдерживаемый период: \(raw) (ожидалось 1h, 24h или 7d)")
+        }
+    }
+
+    private static func parseHistoryOptions(_ arguments: [String]) throws -> (TimeInterval, Int) {
+        var range: TimeInterval = 3_600
+        var points = 240
+        var index = 0
+        while index < arguments.count {
+            guard index + 1 < arguments.count else {
+                throw CLIError.usage("для \(arguments[index]) не указано значение")
+            }
+            switch arguments[index] {
+            case "--range":
+                range = try parseRange(arguments[index + 1])
+            case "--points":
+                guard let parsed = Int(arguments[index + 1]), parsed > 0 else {
+                    throw CLIError.usage("некорректное число точек: \(arguments[index + 1])")
+                }
+                points = min(parsed, 4_096)
+            default:
+                throw CLIError.usage("неизвестный параметр: \(arguments[index])")
+            }
+            index += 2
+        }
+        return (range, points)
+    }
+
+    private static func parseTopOptions(_ arguments: [String]) throws -> (ProcessHistorySort, TimeInterval, Int) {
+        var sortBy: ProcessHistorySort = .cpu
+        var range: TimeInterval = 3_600
+        var limit = 10
+        var index = 0
+        while index < arguments.count {
+            guard index + 1 < arguments.count else {
+                throw CLIError.usage("для \(arguments[index]) не указано значение")
+            }
+            switch arguments[index] {
+            case "--by":
+                guard let parsed = ProcessHistorySort(rawValue: arguments[index + 1].lowercased()) else {
+                    throw CLIError.usage("неподдерживаемая сортировка: \(arguments[index + 1]) (ожидалось cpu или memory)")
+                }
+                sortBy = parsed
+            case "--range":
+                range = try parseRange(arguments[index + 1])
+            case "--limit":
+                guard let parsed = Int(arguments[index + 1]), parsed > 0 else {
+                    throw CLIError.usage("некорректный лимит: \(arguments[index + 1])")
+                }
+                limit = min(parsed, 100)
+            default:
+                throw CLIError.usage("неизвестный параметр: \(arguments[index])")
+            }
+            index += 2
+        }
+        return (sortBy, range, limit)
+    }
+
+    private static func parseMarkerOptions(_ arguments: [String]) throws -> MarkerOptions {
         var options = MarkerOptions()
         var index = 0
         while index < arguments.count {
@@ -232,13 +388,26 @@ struct PurrCoreCLI {
         return encoder
     }()
 
+    private static func printJSON<T: Encodable>(_ value: T) throws {
+        let data = try Self.jsonEncoder.encode(value)
+        print(String(decoding: data, as: UTF8.self))
+    }
+
     private static func liveReport(from snapshot: SystemSnapshot) -> LiveReport {
         LiveReport(
             timestamp: snapshot.timestamp,
             cpuPercent: snapshot.cpuPercent,
+            coreCount: snapshot.coreCount,
+            busyCores: snapshot.busyCoreCount(),
+            perCoreCPU: snapshot.perCoreCPU,
             memory: LiveMemory(
                 usedBytes: snapshot.memory.usedBytes,
                 totalBytes: snapshot.memory.totalBytes,
+                appBytes: snapshot.memory.appBytes,
+                wiredBytes: snapshot.memory.wiredBytes,
+                compressedBytes: snapshot.memory.compressedBytes,
+                cachedBytes: snapshot.memory.cachedBytes,
+                swapUsedBytes: snapshot.memory.swapUsedBytes,
                 pressure: snapshot.memory.pressure.rawValue
             ),
             networkBps: LiveNetworkBps(
@@ -252,13 +421,14 @@ struct PurrCoreCLI {
             thermal: snapshot.thermalState.rawValue,
             topProcesses: snapshot.processes
                 .sorted { $0.cpuPercent > $1.cpuPercent }
-                .prefix(5)
+                .prefix(8)
                 .map { sample in
                     LiveProcess(
                         name: sample.displayName,
                         explanation: sample.explanation,
                         category: sample.category.rawValue,
                         cpuPercent: sample.cpuPercent,
+                        equivalentCores: sample.equivalentCores(totalCores: snapshot.coreCount),
                         residentBytes: sample.residentBytes,
                         processCount: sample.processCount
                     )
@@ -298,6 +468,7 @@ struct PurrCoreCLI {
             samples: points.count,
             cpuPercent: avgMax(points.map(\.cpuPercent)),
             memoryUsedBytes: avgMax(points.map { Double($0.memoryUsedBytes) }),
+            swapUsedBytes: avgMax(points.map { Double($0.swapUsedBytes) }),
             networkBps: ReportNetworkBps(
                 downloadAvg: average(points.map(\.networkDownloadBytesPerSecond)),
                 uploadAvg: average(points.map(\.networkUploadBytesPerSecond))
@@ -307,8 +478,7 @@ struct PurrCoreCLI {
                 writeAvg: average(points.map(\.diskWriteBytesPerSecond))
             )
         )
-        guard let data = try? Self.jsonEncoder.encode(report) else { return }
-        print(String(decoding: data, as: UTF8.self))
+        try? printJSON(report)
     }
 
     private static func marker(kind: TaskEventKind, options: MarkerOptions) -> TaskMarker {
@@ -325,10 +495,14 @@ struct PurrCoreCLI {
     private static func printUsage() {
         let usage = """
         Использование:
+          purrcorectl live
+          purrcorectl history [--range 1h|24h|7d] [--points N]
+          purrcorectl top [--by cpu|memory] [--range 1h|24h|7d] [--limit N]
+          purrcorectl usage
+          purrcorectl ssd
           purrcorectl task begin --source mempalace --task-id ID --label "Название"
           purrcorectl task end   --source mempalace --task-id ID --label "Название"
           purrcorectl run --source mempalace --task-id ID --label "Название" -- команда аргументы
-          purrcorectl live
           purrcorectl status
           purrcorectl purge
         """

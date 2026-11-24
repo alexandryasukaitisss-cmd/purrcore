@@ -11,21 +11,20 @@ Your pet can be a cat, dog, bird, or any other animal.
 
 ## What it does
 
-- Changes the pet's running speed with CPU load. Choose CPU, memory, network, disk, or thermal status beside it.
-- Explains known macOS processes in plain language: `WindowServer` draws windows and screens, `kernel_task` handles drivers, power and temperature, and Spotlight processes search and index files.
-- Groups helper processes under their parent app so you can see which app loads your Mac.
-- Shows current memory pressure and swap, plus CPU, memory, network and disk history over 1 hour, 24 hours, or 7 days.
+- Changes the pet's running speed with CPU load, shows total Mac CPU share (`0–100%`) alongside per-core activity indicators, and lets you display CPU, memory, network, disk, or thermal status in the menu bar.
+- Explains ~65 common macOS, WebKit, developer, and AI processes in plain language: `WindowServer` draws windows and screens, `kernel_task` handles drivers, power and temperature, and Spotlight processes search and index files.
+- Groups helper processes under their parent app, reports physical memory footprint (`ri_phys_footprint`), and lets you switch between live and historical ("Now / Selected period") rankings.
+- Shows kernel memory pressure, Activity Monitor-aligned RAM breakdown, and history charts for CPU, memory, swap, network, and disk over 1 hour, 24 hours, or 7 days.
 - Tracks observed awake time, excluding sleep and gaps while PurrCore is closed.
 - Tracks battery sessions and estimates full-charge awake time after enough observed discharges.
-- Reads available SSD health indicators. Unsupported readings stay **unknown**, including on external drives.
+- Reads available SSD health indicators on demand without continuous background `diskutil` polling. Unsupported readings stay **unknown**, including on external drives.
 
 SwiftUI + AppKit, native system APIs, and SQLite. No separate daemon or third-party runtime packages.
 The interface follows the system language: Russian or English. Both READMEs describe the same features.
 
 ## Build and run
 
-Requires macOS 14+ and a Swift 6 toolchain. CI builds and tests on macOS 14 (Apple Silicon), macOS 15 (Intel) and macOS 26 (Apple Silicon).
-Rendered UI checks were performed on Apple Silicon; the Intel UI has not been checked.
+Requires macOS 14+ and a Swift 6 toolchain. Tested on an Apple Silicon Mac; Intel hardware has not been verified.
 
 ```bash
 swift test
@@ -72,10 +71,14 @@ physical health. PurrCore does not run disk self-tests or repairs.
 
 ```bash
 ./dist/purrcorectl live
+./dist/purrcorectl history --range 24h --points 120
+./dist/purrcorectl top --by cpu --range 1h --limit 10
+./dist/purrcorectl usage
+./dist/purrcorectl ssd
 ./dist/purrcorectl run --source example --task-id demo --label "Example task" -- your-command
 ```
 
-`live` prints a JSON snapshot. `run` records start/end markers and prints a resource summary.
+`live` prints a JSON snapshot (including per-core load, memory breakdown, swap, and top processes) without opening the history database. `history`, `top`, `usage`, and `ssd` export structured JSON for scripting. `run` records start/end markers and prints a resource summary.
 A task runner such as MemPalace can use this interface; it is not an app dependency.
 
 ## Inspiration and license

@@ -172,15 +172,27 @@ private enum ExternalDiskutil {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
         process.arguments = arguments
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
         do { try process.run() } catch { throw SSDHealthReaderError.commandFailed(error.localizedDescription) }
-        // Drain before waiting: diskutil's APFS plist can exceed a pipe buffer.
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Drain stdout and stderr concurrently before waiting: diskutil's APFS plist can exceed a pipe buffer,
+        // and keeping stderr separate prevents warning lines from corrupting plist parsing.
+        let group = DispatchGroup()
+        var errorData = Data()
+        group.enter()
+        DispatchQueue.global(qos: .utility).async {
+            errorData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        group.wait()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
-            throw SSDHealthReaderError.commandFailed(String(data: data, encoding: .utf8) ?? "diskutil failed")
+            let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallback = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw SSDHealthReaderError.commandFailed((message?.isEmpty == false ? message : fallback) ?? "diskutil failed")
         }
         guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
             throw SSDHealthReaderError.commandFailed("Invalid diskutil plist")

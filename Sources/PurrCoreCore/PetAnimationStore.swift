@@ -75,7 +75,8 @@ public struct PetAnimationStore: Sendable {
     // One crop for the whole cycle preserves the pet's scale and baseline.
     // Cropping each frame independently would make its size jump while running.
     private func trimSharedTransparentMargins(_ frames: [CGImage]) throws -> [CGImage] {
-        var bounds = CGRect.null
+        var thresholdBounds = CGRect.null
+        var nonZeroBounds = CGRect.null
         for frame in frames {
             guard let context = CGContext(
                 data: nil, width: frame.width, height: frame.height,
@@ -86,17 +87,33 @@ public struct PetAnimationStore: Sendable {
             context.draw(frame, in: CGRect(x: 0, y: 0, width: frame.width, height: frame.height))
             let pixels = data.assumingMemoryBound(to: UInt8.self)
             var left = frame.width, top = frame.height, right = -1, bottom = -1
+            var softLeft = frame.width, softTop = frame.height, softRight = -1, softBottom = -1
             for y in 0..<frame.height {
-                for x in 0..<frame.width where pixels[y * context.bytesPerRow + x * 4 + 3] > 0 {
-                    left = min(left, x); right = max(right, x)
-                    top = min(top, y); bottom = max(bottom, y)
+                let rowOffset = y * context.bytesPerRow
+                for x in 0..<frame.width {
+                    let alpha = pixels[rowOffset + x * 4 + 3]
+                    if alpha > 0 {
+                        softLeft = min(softLeft, x); softRight = max(softRight, x)
+                        softTop = min(softTop, y); softBottom = max(softBottom, y)
+                        if alpha > 8 {
+                            left = min(left, x); right = max(right, x)
+                            top = min(top, y); bottom = max(bottom, y)
+                        }
+                    }
                 }
             }
-            guard right >= left, bottom >= top else { throw PetAnimationError.invalidStrip }
-            bounds = bounds.union(CGRect(x: left, y: top, width: right - left + 1, height: bottom - top + 1))
+            guard softRight >= softLeft, softBottom >= softTop else { throw PetAnimationError.invalidStrip }
+            nonZeroBounds = nonZeroBounds.union(CGRect(x: softLeft, y: softTop, width: softRight - softLeft + 1, height: softBottom - softTop + 1))
+            if right >= left, bottom >= top {
+                thresholdBounds = thresholdBounds.union(CGRect(x: left, y: top, width: right - left + 1, height: bottom - top + 1))
+            }
         }
+        let bounds = thresholdBounds.isNull ? nonZeroBounds : thresholdBounds
         return try frames.map { frame in
-            guard let cropped = frame.cropping(to: bounds) else { throw PetAnimationError.invalidStrip }
+            let frameRect = CGRect(x: 0, y: 0, width: frame.width, height: frame.height)
+            let safeBounds = bounds.intersection(frameRect)
+            guard !safeBounds.isNull, safeBounds.width >= 1, safeBounds.height >= 1,
+                  let cropped = frame.cropping(to: safeBounds) else { throw PetAnimationError.invalidStrip }
             return cropped
         }
     }

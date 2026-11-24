@@ -23,18 +23,31 @@ enum AppDefaults {
     }
 }
 
+enum ActiveSurface: Hashable {
+    case popover
+    case dashboard
+    case settings
+    case ssdHealth
+}
+
+private enum DiskChangeKind {
+    case appeared
+    case disappeared
+    case descriptionChanged
+}
+
 // Disk Arbitration also reports physical disks with no mounted volumes.
 private final class SSDDiskObserver {
-    let onChange: @MainActor () -> Void
+    let onChange: @MainActor (DiskChangeKind) -> Void
     private let session: DASession?
 
-    init(onChange: @escaping @MainActor () -> Void) {
+    init(onChange: @escaping @MainActor (DiskChangeKind) -> Void) {
         self.onChange = onChange
         session = DASessionCreate(kCFAllocatorDefault)
         guard let session else { return }
         let context = Unmanaged.passUnretained(self).toOpaque()
-        DARegisterDiskAppearedCallback(session, nil, ssdDiskChanged, context)
-        DARegisterDiskDisappearedCallback(session, nil, ssdDiskChanged, context)
+        DARegisterDiskAppearedCallback(session, nil, ssdDiskAppeared, context)
+        DARegisterDiskDisappearedCallback(session, nil, ssdDiskDisappeared, context)
         let keys = [kDADiskDescriptionVolumePathKey, kDADiskDescriptionVolumeNameKey] as CFArray
         DARegisterDiskDescriptionChangedCallback(session, nil, keys, ssdDiskDescriptionChanged, context)
         DASessionSetDispatchQueue(session, .main)
@@ -43,23 +56,32 @@ private final class SSDDiskObserver {
     deinit {
         guard let session else { return }
         let context = Unmanaged.passUnretained(self).toOpaque()
-        DAUnregisterCallback(session, unsafeBitCast(ssdDiskChanged as DADiskAppearedCallback, to: UnsafeMutableRawPointer.self), context)
+        DAUnregisterCallback(session, unsafeBitCast(ssdDiskAppeared as DADiskAppearedCallback, to: UnsafeMutableRawPointer.self), context)
+        DAUnregisterCallback(session, unsafeBitCast(ssdDiskDisappeared as DADiskDisappearedCallback, to: UnsafeMutableRawPointer.self), context)
         DAUnregisterCallback(session, unsafeBitCast(ssdDiskDescriptionChanged as DADiskDescriptionChangedCallback, to: UnsafeMutableRawPointer.self), context)
         DASessionSetDispatchQueue(session, nil)
     }
 }
 
-private func ssdDiskChanged(_ disk: DADisk, _ context: UnsafeMutableRawPointer?) {
+private func notifyDiskObserver(_ disk: DADisk, kind: DiskChangeKind, context: UnsafeMutableRawPointer?) {
     guard let context else { return }
     let description = DADiskCopyDescription(disk) as? [String: Any]
     guard description?[kDADiskDescriptionDeviceInternalKey as String] as? Bool != true else { return }
     MainActor.assumeIsolated {
-        Unmanaged<SSDDiskObserver>.fromOpaque(context).takeUnretainedValue().onChange()
+        Unmanaged<SSDDiskObserver>.fromOpaque(context).takeUnretainedValue().onChange(kind)
     }
 }
 
+private func ssdDiskAppeared(_ disk: DADisk, _ context: UnsafeMutableRawPointer?) {
+    notifyDiskObserver(disk, kind: .appeared, context: context)
+}
+
+private func ssdDiskDisappeared(_ disk: DADisk, _ context: UnsafeMutableRawPointer?) {
+    notifyDiskObserver(disk, kind: .disappeared, context: context)
+}
+
 private func ssdDiskDescriptionChanged(_ disk: DADisk, _ keys: CFArray, _ context: UnsafeMutableRawPointer?) {
-    ssdDiskChanged(disk, context)
+    notifyDiskObserver(disk, kind: .descriptionChanged, context: context)
 }
 
 enum CatAnimationConfig {
@@ -125,11 +147,10 @@ enum HistoryRange: Int, CaseIterable, Identifiable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var snapshot = SystemSnapshot.empty
-    @Published private(set) var historyPoints: [HistoryPoint] = [] {
-        didSet { refreshDisplayedHistory() }
-    }
+    @Published private(set) var historyPoints: [HistoryPoint] = []
     @Published private(set) var taskMarkers: [TaskMarker] = []
-    @Published private(set) var historicalProcessGroups: [ProcessGroupSample] = []
+    @Published private(set) var historicalCPUProcessGroups: [ProcessGroupSample] = []
+    @Published private(set) var historicalMemoryProcessGroups: [ProcessGroupSample] = []
     @Published private(set) var databaseSizeBytes: UInt64 = 0
     @Published private(set) var ssd: SSDSnapshot?
     @Published private(set) var ssdHealth: SSDHealthSnapshot?
@@ -139,7 +160,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var externalSSDHealthError: String?
     @Published private(set) var battery: BatterySnapshot?
     @Published private(set) var usageReport = UsageReport.empty
-    @Published private(set) var catFrameIndex = 0
     @Published private(set) var petPhoto: NSImage?
     @Published private(set) var petAnimation: [CGImage]?
     @Published private(set) var importingPetAsset = false
@@ -147,8 +167,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var historyError: String?
     @Published var selectedRange: HistoryRange = .day {
         didSet {
-            refreshDisplayedHistory()
-            Task { await reloadHistory() }
+            if activeSurfaces.contains(.dashboard) {
+                refreshDisplayedHistory()
+                Task { await reloadHistory(includeChartHistory: true) }
+            }
         }
     }
 
@@ -166,8 +188,24 @@ final class AppModel: ObservableObject {
     private var lastSSDHealthRefresh = Date.distantPast
     private var ssdHealthRevision = 0
     private var ssdRefreshPending = false
+    private var ssdHealthNeedsRefresh = false
+    private var ssdDebounceTask: Task<Void, Never>?
     private var diskObserver: SSDDiskObserver?
     private var isPreparingForTermination = false
+    private var activeSurfaces: Set<ActiveSurface> = []
+    private var forceProcessSampleNextTick = false
+
+    private var isProcessSurfaceActive: Bool {
+        activeSurfaces.contains(.popover) || activeSurfaces.contains(.dashboard)
+    }
+
+    private var isSSDSurfaceActive: Bool {
+        activeSurfaces.contains(.ssdHealth) || activeSurfaces.contains(.settings)
+    }
+
+    private var hasVisibleHistorySurface: Bool {
+        activeSurfaces.contains(.dashboard) || activeSurfaces.contains(.popover) || activeSurfaces.contains(.settings)
+    }
 
     init() {
         AppDefaults.register()
@@ -196,18 +234,42 @@ final class AppModel: ObservableObject {
             historyError = tr(error.localizedDescription)
         }
         battery = StorageAndPowerSampler.sampleBattery()
-        diskObserver = SSDDiskObserver { [weak self] in
-            guard let self else { return }
-            ssdHealthRevision += 1
-            externalSSDHealth = []
-            if ssdHealthLoading {
-                ssdRefreshPending = true
-            } else {
-                refreshSSDHealth()
-            }
+        diskObserver = SSDDiskObserver { [weak self] kind in
+            self?.handleExternalDiskChange(kind)
         }
         refreshSSDHealth()
         start()
+    }
+
+    deinit {
+        monitorTask?.cancel()
+        ssdDebounceTask?.cancel()
+    }
+
+    func setSurface(_ surface: ActiveSurface, active: Bool) {
+        if active {
+            let inserted = activeSurfaces.insert(surface).inserted
+            switch surface {
+            case .dashboard:
+                forceProcessSampleNextTick = true
+                refreshDisplayedHistory()
+                Task { await reloadHistory(includeChartHistory: true) }
+            case .popover:
+                forceProcessSampleNextTick = true
+                ssd = StorageAndPowerSampler.sampleSSD()
+                Task { await reloadHistory(includeChartHistory: false) }
+            case .settings:
+                Task { await reloadHistory(includeChartHistory: false) }
+                refreshSSDHealthIfStale(threshold: 15)
+            case .ssdHealth:
+                refreshSSDHealthIfStale(threshold: 15)
+            }
+            if inserted, surface == .popover || surface == .dashboard {
+                battery = StorageAndPowerSampler.sampleBattery()
+            }
+        } else {
+            activeSurfaces.remove(surface)
+        }
     }
 
     func importPetPhoto(from url: URL) {
@@ -287,10 +349,6 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([petPhotoStore.referencePhotoURL])
     }
 
-    deinit {
-        monitorTask?.cancel()
-    }
-
     var displayedHistory: [HistoryPoint] {
         cachedDisplayedHistory
     }
@@ -306,48 +364,64 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func reloadHistory() async {
+    func reloadHistory(includeChartHistory: Bool = true) async {
         guard let store else { return }
         historyReloadRevision += 1
         let revision = historyReloadRevision
         let range = selectedRange
         let now = Date()
         let since = now.addingTimeInterval(-Double(range.rawValue))
-        let systemUntil = livePoints.first.map {
-            Date(timeIntervalSince1970: $0.timestamp.timeIntervalSince1970.nextDown)
-        } ?? now
+        let calendar = Calendar.autoupdatingCurrent
+        let usageSince = calendar.date(
+            byAdding: .day,
+            value: -6,
+            to: calendar.startOfDay(for: now)
+        ) ?? now.addingTimeInterval(-6 * 86_400)
+
         do {
-            async let points: [HistoryPoint] = systemUntil >= since
-                ? store.loadSystemHistory(since: since, until: systemUntil, maxPoints: 720)
-                : []
-            async let markers = store.loadTaskMarkers(since: since, until: now)
-            async let processes = store.loadTopProcessGroups(since: since, limit: 16)
             async let size = store.databaseSizeBytes()
-            let calendar = Calendar.autoupdatingCurrent
-            let usageSince = calendar.date(
-                byAdding: .day,
-                value: -6,
-                to: calendar.startOfDay(for: now)
-            ) ?? now.addingTimeInterval(-6 * 86_400)
             async let usage = store.loadUsageReport(
                 since: usageSince,
                 until: now,
                 calendar: calendar
             )
-            let loadedPoints = try await points
-            let loadedMarkers = try await markers
-            let loadedProcesses = try await processes
-            let loadedSize = await size
-            let loadedUsage = try await usage
-            guard revision == historyReloadRevision, selectedRange == range else { return }
-            historyPoints = loadedPoints
-            taskMarkers = loadedMarkers
-            historicalProcessGroups = loadedProcesses
-            databaseSizeBytes = loadedSize
-            usageReport = loadedUsage
-            historyError = nil
+
+            if includeChartHistory {
+                let systemUntil = livePoints.first.map {
+                    Date(timeIntervalSince1970: $0.timestamp.timeIntervalSince1970.nextDown)
+                } ?? now
+                async let points: [HistoryPoint] = systemUntil >= since
+                    ? store.loadSystemHistory(since: since, until: systemUntil, maxPoints: 720)
+                    : []
+                async let markers = store.loadTaskMarkers(since: since, until: now)
+                async let cpuProcesses = store.loadTopProcessGroups(since: since, until: now, sortBy: .cpu, limit: 16)
+                async let memProcesses = store.loadTopProcessGroups(since: since, until: now, sortBy: .memory, limit: 16)
+
+                let loadedPoints = try await points
+                let loadedMarkers = try await markers
+                let loadedCPUProcesses = try await cpuProcesses
+                let loadedMemProcesses = try await memProcesses
+                let loadedSize = await size
+                let loadedUsage = try await usage
+                guard revision == historyReloadRevision, selectedRange == range else { return }
+                historyPoints = loadedPoints
+                taskMarkers = loadedMarkers
+                historicalCPUProcessGroups = loadedCPUProcesses
+                historicalMemoryProcessGroups = loadedMemProcesses
+                databaseSizeBytes = loadedSize
+                usageReport = loadedUsage
+                historyError = nil
+                refreshDisplayedHistory()
+            } else {
+                let loadedSize = await size
+                let loadedUsage = try await usage
+                guard revision == historyReloadRevision else { return }
+                databaseSizeBytes = loadedSize
+                usageReport = loadedUsage
+                historyError = nil
+            }
         } catch {
-            guard revision == historyReloadRevision, selectedRange == range else { return }
+            guard revision == historyReloadRevision else { return }
             historyError = tr(error.localizedDescription)
         }
     }
@@ -358,7 +432,8 @@ final class AppModel: ObservableObject {
         usageTracker.suspend(at: .now, battery: currentBattery)
         usageLogger.info("System sleep: closed awake segment")
         Task { [weak self] in
-            await self?.persistUsage(reload: true)
+            guard let self else { return }
+            await self.persistUsage(reload: self.hasVisibleHistorySurface)
         }
     }
 
@@ -368,7 +443,8 @@ final class AppModel: ObservableObject {
         usageTracker.resume(at: .now, battery: currentBattery)
         usageLogger.info("System wake: started awake segment")
         Task { [weak self] in
-            await self?.persistUsage(reload: true)
+            guard let self else { return }
+            await self.persistUsage(reload: self.hasVisibleHistorySurface)
         }
     }
 
@@ -376,16 +452,28 @@ final class AppModel: ObservableObject {
         guard !isPreparingForTermination else { return }
         isPreparingForTermination = true
         monitorTask?.cancel()
+        ssdDebounceTask?.cancel()
         let currentBattery = StorageAndPowerSampler.sampleBattery()
         battery = currentBattery
         usageTracker.suspend(at: .now, battery: currentBattery)
         await persistUsage(reload: false)
-        usageLogger.info("Termination: usage state flushed")
+        try? await store?.checkpointAndTruncate()
+        usageLogger.info("Termination: usage state flushed and WAL truncated")
+    }
+
+    func refreshSSDHealthIfStale(threshold: TimeInterval) {
+        if ssdHealth == nil || ssdHealthNeedsRefresh || Date().timeIntervalSince(lastSSDHealthRefresh) >= threshold {
+            refreshSSDHealth()
+        }
     }
 
     func refreshSSDHealth() {
-        guard !ssdHealthLoading else { return }
+        guard !ssdHealthLoading else {
+            ssdRefreshPending = true
+            return
+        }
         ssdHealthLoading = true
+        ssdHealthNeedsRefresh = false
         ssdHealthError = nil
         externalSSDHealthError = nil
         lastSSDHealthRefresh = .now
@@ -414,7 +502,32 @@ final class AppModel: ObservableObject {
             ssdHealthLoading = false
             if ssdRefreshPending {
                 ssdRefreshPending = false
-                refreshSSDHealth()
+                if isSSDSurfaceActive {
+                    refreshSSDHealth()
+                } else {
+                    ssdHealthNeedsRefresh = true
+                }
+            }
+        }
+    }
+
+    private func handleExternalDiskChange(_ kind: DiskChangeKind) {
+        if kind == .disappeared {
+            ssdHealthRevision += 1
+            externalSSDHealth = []
+        }
+        guard isSSDSurfaceActive else {
+            ssdHealthNeedsRefresh = true
+            return
+        }
+        ssdDebounceTask?.cancel()
+        ssdDebounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, let self else { return }
+            if self.ssdHealthLoading {
+                self.ssdRefreshPending = true
+            } else {
+                self.refreshSSDHealth()
             }
         }
     }
@@ -431,17 +544,29 @@ final class AppModel: ObservableObject {
         await maintainHistory()
 
         while !Task.isCancelled {
+            let historyEnabled = UserDefaults.standard.bool(forKey: AppDefaults.historyEnabled)
             let processInterval = max(UserDefaults.standard.integer(forKey: AppDefaults.detailedProcessInterval), 5)
-            let includeProcesses = tick == 0 || tick.isMultiple(of: processInterval)
+            let shouldPersistProcesses = historyEnabled && tick > 0 && tick.isMultiple(of: 60)
+            let includeProcesses: Bool
+            if tick == 0 || tick == 1 || forceProcessSampleNextTick || shouldPersistProcesses {
+                includeProcesses = true
+                forceProcessSampleNextTick = false
+            } else if isProcessSurfaceActive {
+                includeProcesses = tick.isMultiple(of: processInterval)
+            } else {
+                includeProcesses = false
+            }
+
             let sampled = await sampler.sample(includeProcesses: includeProcesses)
             snapshot = sampled
-            if Date().timeIntervalSince(lastSSDHealthRefresh) >= 60 {
+
+            if isSSDSurfaceActive && Date().timeIntervalSince(lastSSDHealthRefresh) >= 60 {
                 refreshSSDHealth()
             }
-            if includeProcesses {
+            if tick == 0 || (includeProcesses && activeSurfaces.contains(.popover)) {
                 ssd = StorageAndPowerSampler.sampleSSD()
             }
-            if tick == 0 || tick.isMultiple(of: 5) {
+            if tick == 0 || (battery != nil && tick.isMultiple(of: 5)) || (battery == nil && tick.isMultiple(of: 60)) {
                 battery = StorageAndPowerSampler.sampleBattery()
             }
             usageTracker.observe(at: sampled.timestamp, battery: battery)
@@ -450,15 +575,18 @@ final class AppModel: ObservableObject {
             if livePoints.count > 3_600 {
                 livePoints.removeFirst(livePoints.count - 3_600)
             }
-            refreshDisplayedHistory()
+            if activeSurfaces.contains(.dashboard) {
+                refreshDisplayedHistory()
+            }
 
-            if UserDefaults.standard.bool(forKey: AppDefaults.historyEnabled), let store {
+            if historyEnabled, let store {
                 do {
                     if tick.isMultiple(of: 15) {
                         try await store.addSystemSample(sampled)
                     }
-                    if includeProcesses, tick.isMultiple(of: 60) {
-                        try await store.addProcessSamples(Array(sampled.processes.prefix(16)), at: sampled.timestamp)
+                    if shouldPersistProcesses {
+                        let toPersist = Self.processesToPersist(from: sampled.processes)
+                        try await store.addProcessSamples(toPersist, at: sampled.timestamp)
                     }
                 } catch {
                     historyError = tr(error.localizedDescription)
@@ -469,12 +597,24 @@ final class AppModel: ObservableObject {
                 await maintainHistory()
             }
             if tick.isMultiple(of: 15) {
-                await persistUsage(reload: true)
+                await persistUsage(reload: hasVisibleHistorySurface)
             }
 
             tick += 1
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
+    }
+
+    private static func processesToPersist(from processes: [ProcessGroupSample]) -> [ProcessGroupSample] {
+        var selected: [String: ProcessGroupSample] = [:]
+        selected.reserveCapacity(20)
+        for sample in processes.sorted(by: { $0.cpuPercent > $1.cpuPercent }).prefix(10) {
+            selected[sample.groupKey] = sample
+        }
+        for sample in processes.sorted(by: { $0.residentBytes > $1.residentBytes }).prefix(10) {
+            selected[sample.groupKey] = sample
+        }
+        return Array(selected.values)
     }
 
     func setBatteryRetention(days: Int) {
@@ -491,7 +631,9 @@ final class AppModel: ObservableObject {
             if [30, 90, 365].contains(days) {
                 try await store.purgeBatterySessions(endedBefore: Date().addingTimeInterval(-Double(days) * 86_400))
             }
-            await reloadHistory()
+            if hasVisibleHistorySurface {
+                await reloadHistory(includeChartHistory: activeSurfaces.contains(.dashboard))
+            }
         } catch {
             historyError = tr(error.localizedDescription)
         }
@@ -523,12 +665,11 @@ final class AppModel: ObservableObject {
             try await store.saveUsageBatch(batch)
             usageTracker.acknowledgePersistence(of: batch)
             if reload {
-                await reloadHistory()
+                await reloadHistory(includeChartHistory: activeSurfaces.contains(.dashboard))
             }
         } catch {
             historyError = tr(error.localizedDescription)
             usageLogger.error("Usage persistence failed: \(error.localizedDescription, privacy: .public)")
         }
     }
-
 }

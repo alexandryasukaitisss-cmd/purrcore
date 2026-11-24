@@ -256,9 +256,153 @@ final class HistoryStoreTests: XCTestCase {
         )
 
         let schemaVersion = await store.schemaVersion()
-        XCTAssertEqual(schemaVersion, 1)
+        XCTAssertEqual(schemaVersion, 2)
         XCTAssertEqual(points.count, 1)
         XCTAssertEqual(points.first?.cpuPercent, 42)
+        XCTAssertEqual(points.first?.swapUsedBytes, 0)
+        XCTAssertEqual(points.first?.memoryPressure, .normal)
+    }
+
+    func testMigratesV1DatabaseToV2AndPersistsSwapAndMemoryPressure() async throws {
+        let fixture = try TemporaryHistoryFixture()
+        let v1Timestamp = Date(timeIntervalSince1970: 2_000_000_000)
+        try createV1Database(at: fixture.databaseURL, timestamp: v1Timestamp)
+
+        let store = try HistoryStore(url: fixture.databaseURL)
+        let schemaVersion = await store.schemaVersion()
+        XCTAssertEqual(schemaVersion, 2)
+
+        let v2Timestamp = v1Timestamp.addingTimeInterval(15)
+        try await store.addSystemSample(
+            .fixture(at: v2Timestamp, cpu: 65, memory: 12_000, swap: 4_500_000_000, pressure: .warning)
+        )
+
+        let points = try await store.loadSystemHistory(
+            since: v1Timestamp.addingTimeInterval(-1),
+            until: v2Timestamp.addingTimeInterval(1),
+            maxPoints: 10
+        )
+        XCTAssertEqual(points.count, 2)
+        XCTAssertEqual(points[0].swapUsedBytes, 0)
+        XCTAssertEqual(points[0].memoryPressure, .normal)
+        XCTAssertEqual(points[1].swapUsedBytes, 4_500_000_000)
+        XCTAssertEqual(points[1].memoryPressure, .warning)
+    }
+
+    func testTimeBucketedDownsamplingPreservesDistributionAcrossNonUniformDensity() throws {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let sixDays: TimeInterval = 6 * 86_400
+        let end = start.addingTimeInterval(sixDays + 3_600)
+
+        var stored: [HistoryPoint] = []
+        var offset: TimeInterval = 0
+        while offset < sixDays {
+            stored.append(HistoryPoint(
+                timestamp: start.addingTimeInterval(offset),
+                cpuPercent: 20,
+                memoryUsedBytes: 4_000,
+                swapUsedBytes: 1_000,
+                memoryPressure: .normal,
+                networkDownloadBytesPerSecond: 0,
+                networkUploadBytesPerSecond: 0,
+                diskReadBytesPerSecond: 0,
+                diskWriteBytesPerSecond: 0
+            ))
+            offset += 900 // every 15 minutes over 6 days = 576 points
+        }
+
+        // Dense 1-second live points for the final 1 hour = 3601 points
+        let live: [HistoryPoint] = (0...3_600).map { sec in
+            HistoryPoint(
+                timestamp: start.addingTimeInterval(sixDays + Double(sec)),
+                cpuPercent: 80,
+                memoryUsedBytes: 8_000,
+                swapUsedBytes: 2_000,
+                memoryPressure: .warning,
+                networkDownloadBytesPerSecond: 0,
+                networkUploadBytesPerSecond: 0,
+                diskReadBytesPerSecond: 0,
+                diskWriteBytesPerSecond: 0
+            )
+        }
+
+        let downsampled = HistoryPoint.mergedAndDownsampled(
+            stored: stored,
+            live: live,
+            since: start,
+            until: end,
+            maximumCount: 720
+        )
+
+        XCTAssertLessThanOrEqual(downsampled.count, 720)
+        let pointsInFirstSixDays = downsampled.filter { $0.timestamp < start.addingTimeInterval(sixDays) }.count
+        // Time-bucketed downsampling allocates ~99% of buckets to the first 6 days, not ~13% like index slicing did.
+        XCTAssertGreaterThan(pointsInFirstSixDays, 400)
+        XCTAssertEqual(downsampled.first?.timestamp, start)
+        XCTAssertEqual(downsampled.last?.timestamp, end)
+    }
+
+    func testLoadTopProcessGroupsRanksCPUByTimeWeightedShareAndMemoryByPeak() async throws {
+        let fixture = try TemporaryHistoryFixture()
+        let store = try HistoryStore(url: fixture.databaseURL)
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+
+        for slot in 0..<10 {
+            let ts = start.addingTimeInterval(Double(slot * 60))
+            var samples = [
+                ProcessGroupSample(
+                    groupKey: "app:steady",
+                    displayName: "Steady",
+                    explanation: "основной процесс",
+                    category: .development,
+                    cpuPercent: 15,
+                    residentBytes: 500_000_000,
+                    processCount: 2
+                )
+            ]
+            if slot == 0 {
+                samples.append(ProcessGroupSample(
+                    groupKey: "app:transient",
+                    displayName: "Transient",
+                    explanation: "основной процесс",
+                    category: .other,
+                    cpuPercent: 80,
+                    residentBytes: 100_000_000,
+                    processCount: 1
+                ))
+            }
+            if slot == 3 || slot == 4 {
+                samples.append(ProcessGroupSample(
+                    groupKey: "app:heavy-ram",
+                    displayName: "HeavyRAM",
+                    explanation: "основной процесс",
+                    category: .browser,
+                    cpuPercent: 1,
+                    residentBytes: slot == 4 ? 4_000_000_000 : 2_000_000_000,
+                    processCount: 5
+                ))
+            }
+            try await store.addProcessSamples(samples, at: ts)
+        }
+
+        let byCPU = try await store.loadTopProcessGroups(
+            since: start.addingTimeInterval(-1),
+            until: start.addingTimeInterval(1_000),
+            sortBy: .cpu,
+            limit: 10
+        )
+        XCTAssertEqual(byCPU.map(\.groupKey), ["app:steady", "app:transient", "app:heavy-ram"])
+        XCTAssertEqual(byCPU[0].cpuPercent, 15.0, accuracy: 0.01)
+        XCTAssertEqual(byCPU[1].cpuPercent, 8.0, accuracy: 0.01)
+
+        let byMemory = try await store.loadTopProcessGroups(
+            since: start.addingTimeInterval(-1),
+            until: start.addingTimeInterval(1_000),
+            sortBy: .memory,
+            limit: 10
+        )
+        XCTAssertEqual(byMemory.map(\.groupKey), ["app:heavy-ram", "app:steady", "app:transient"])
+        XCTAssertEqual(byMemory[0].residentBytes, 4_000_000_000)
     }
 
     func testStoresUsageAndBuildsDailyBatteryReport() async throws {
@@ -454,6 +598,8 @@ private extension SystemSnapshot {
         at date: Date,
         cpu: Double,
         memory: UInt64 = 8_000,
+        swap: UInt64 = 0,
+        pressure: MemoryPressureLevel = .normal,
         download: Double = 100,
         upload: Double = 50,
         diskRead: Double = 200,
@@ -462,7 +608,7 @@ private extension SystemSnapshot {
         SystemSnapshot(
             timestamp: date,
             cpuPercent: cpu,
-            memory: MemorySnapshot(totalBytes: 16_000, usedBytes: memory, appBytes: 4_000, wiredBytes: 1_000, compressedBytes: 1_000, cachedBytes: 2_000, swapUsedBytes: 0, pressure: .normal),
+            memory: MemorySnapshot(totalBytes: 16_000, usedBytes: memory, appBytes: 4_000, wiredBytes: 1_000, compressedBytes: 1_000, cachedBytes: 2_000, swapUsedBytes: swap, pressure: pressure),
             network: ThroughputSnapshot(downloadBytesPerSecond: download, uploadBytesPerSecond: upload),
             disk: ThroughputSnapshot(downloadBytesPerSecond: diskRead, uploadBytesPerSecond: diskWrite),
             thermalState: .nominal,
@@ -499,6 +645,39 @@ private func createLegacyDatabase(at url: URL, timestamp: Date) throws {
         throw NSError(
             domain: "HistoryStoreTests",
             code: 2,
+            userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))]
+        )
+    }
+}
+
+private func createV1Database(at url: URL, timestamp: Date) throws {
+    var database: OpaquePointer?
+    guard sqlite3_open(url.path, &database) == SQLITE_OK, let database else {
+        throw NSError(domain: "HistoryStoreTests", code: 3)
+    }
+    defer { sqlite3_close(database) }
+
+    let sql = """
+    CREATE TABLE system_samples (
+        timestamp REAL PRIMARY KEY,
+        cpu_percent REAL NOT NULL,
+        memory_used_bytes INTEGER NOT NULL,
+        network_download_bps REAL NOT NULL,
+        network_upload_bps REAL NOT NULL,
+        disk_read_bps REAL NOT NULL,
+        disk_write_bps REAL NOT NULL,
+        thermal_state TEXT NOT NULL
+    );
+    INSERT INTO system_samples VALUES (
+        \(timestamp.timeIntervalSince1970), 33, 9000, 100, 50, 200, 75, 'nominal'
+    );
+    PRAGMA user_version = 1;
+    """
+
+    guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else {
+        throw NSError(
+            domain: "HistoryStoreTests",
+            code: 4,
             userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(database))]
         )
     }

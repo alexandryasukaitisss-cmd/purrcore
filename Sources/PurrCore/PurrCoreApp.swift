@@ -7,22 +7,13 @@ import SwiftUI
 
 @MainActor
 enum CatAsset {
-    static let menuBarSize = NSSize(width: 64, height: 24)
-    static let statusSlotSize = NSSize(width: 64, height: 24)
-
-    private static let resourceBundle: Bundle? = {
-        let bundleName = "PurrCore_PurrCore.bundle"
-        let candidates = [
-            Bundle.main.resourceURL?.appendingPathComponent(bundleName),
-            Bundle.main.bundleURL.appendingPathComponent(bundleName)
-        ].compactMap { $0 }
-        return candidates.lazy.compactMap(Bundle.init(url:)).first
-    }()
+    static let menuBarSize = NSSize(width: 48, height: 24)
+    static let statusSlotSize = NSSize(width: 48, height: 24)
 
     static let frames: [NSImage] = (0..<CatAnimationConfig.frameCount).map { frame in
         let image: NSImage
         if
-            let url = resourceBundle?.url(forResource: "cat_\(frame)", withExtension: "png"),
+            let url = PurrCoreResources.bundle.url(forResource: "cat_\(frame)", withExtension: "png"),
             let loaded = NSImage(contentsOf: url)
         {
             image = loaded
@@ -63,6 +54,117 @@ struct PetFrameImage: View {
     }
 }
 
+/// GPU-composited CoreAnimation sprite view so animated pets in MenuPanel and
+/// Settings preview never trigger SwiftUI layout passes or display-link CPU spikes.
+struct AnimatedPetView: NSViewRepresentable {
+    let cpuPercent: Double
+    let animationEnabled: Bool
+    let reduceMotion: Bool
+    let customFrames: [CGImage]?
+
+    func makeNSView(context: Context) -> AnimatedPetNSView {
+        AnimatedPetNSView()
+    }
+
+    func updateNSView(_ view: AnimatedPetNSView, context: Context) {
+        let frames = (customFrames?.isEmpty == false ? customFrames : nil) ?? CatAsset.cgFrames
+        view.update(
+            frames: frames,
+            cpuPercent: cpuPercent,
+            shouldAnimate: animationEnabled && !reduceMotion
+        )
+    }
+}
+
+@MainActor
+final class AnimatedPetNSView: NSView {
+    private let petLayer = CALayer()
+    private var currentFrameCount = 0
+    private var currentFirstFrame: CGImage?
+    private var currentSpeed: Float?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        petLayer.contentsGravity = .resizeAspect
+        petLayer.minificationFilter = .trilinear
+        petLayer.magnificationFilter = .linear
+        layer?.addSublayer(petLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if petLayer.contentsScale != scale {
+            petLayer.contentsScale = scale
+        }
+        if petLayer.frame != bounds {
+            petLayer.frame = bounds
+        }
+        CATransaction.commit()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        petLayer.contentsScale = scale
+        CATransaction.commit()
+    }
+
+    func update(frames: [CGImage], cpuPercent: Double, shouldAnimate: Bool) {
+        let framesChanged = frames.count != currentFrameCount || frames.first !== currentFirstFrame
+        if framesChanged {
+            currentFrameCount = frames.count
+            currentFirstFrame = frames.first
+            petLayer.removeAnimation(forKey: "petRun")
+            currentSpeed = nil
+        }
+
+        guard shouldAnimate, !frames.isEmpty else {
+            petLayer.removeAnimation(forKey: "petRun")
+            petLayer.contents = frames.first
+            petLayer.speed = 1
+            petLayer.timeOffset = 0
+            petLayer.beginTime = 0
+            currentSpeed = nil
+            return
+        }
+
+        let interval = CatSpeedPolicy.frameInterval(cpuPercent: cpuPercent)
+        let rawSpeed = Float(CatAnimationConfig.baseFrameInterval / interval)
+        let speed = (rawSpeed * 20).rounded() / 20
+
+        if petLayer.animation(forKey: "petRun") == nil {
+            petLayer.speed = 1
+            petLayer.timeOffset = 0
+            petLayer.beginTime = 0
+            let animation = CAKeyframeAnimation(keyPath: "contents")
+            animation.values = frames
+            animation.calculationMode = .discrete
+            animation.duration = CatAnimationConfig.baseFrameInterval * Double(frames.count)
+            animation.repeatCount = .infinity
+            animation.isRemovedOnCompletion = false
+            petLayer.add(animation, forKey: "petRun")
+        }
+
+        guard currentSpeed != speed else { return }
+        let now = CACurrentMediaTime()
+        petLayer.timeOffset = petLayer.convertTime(now, from: nil)
+        petLayer.beginTime = now
+        petLayer.speed = speed
+        currentSpeed = speed
+    }
+}
+
 @MainActor
 final class AppServices {
     static let shared = AppServices()
@@ -81,7 +183,8 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
     private var terminationReplyPending = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if ProcessInfo.processInfo.arguments.contains("--register-login-item") {
+        let arguments = ProcessInfo.processInfo.arguments
+        if arguments.contains("--register-login-item") {
             do {
                 try SMAppService.mainApp.register()
                 let status = SMAppService.mainApp.status
@@ -90,6 +193,15 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 print("PurrCore login item registration failed: \(error)")
                 exit(1)
+            }
+        }
+
+        if !arguments.contains("--allow-multiple"), let bundleID = Bundle.main.bundleIdentifier {
+            let currentPID = ProcessInfo.processInfo.processIdentifier
+            let duplicates = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+                .filter { $0.processIdentifier != currentPID && !$0.isTerminated }
+            if !duplicates.isEmpty {
+                exit(0)
             }
         }
 
@@ -121,15 +233,15 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
             openSettings: { services.settingsController.show(model: services.model) }
         )
 
-        if ProcessInfo.processInfo.arguments.contains("--show-dashboard") {
+        if arguments.contains("--show-dashboard") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 services.dashboardController.show(model: services.model)
             }
-        } else if ProcessInfo.processInfo.arguments.contains("--show-settings") {
+        } else if arguments.contains("--show-settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 services.settingsController.show(model: services.model)
             }
-        } else if ProcessInfo.processInfo.arguments.contains("--show-menu") {
+        } else if arguments.contains("--show-menu") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                 self?.statusController?.showPopover()
             }
@@ -144,6 +256,13 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            statusController?.showPopover()
+        }
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -174,6 +293,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let catLayer = CALayer()
     private var animationSpeed: Float?
     private var lastTitleRefresh = Date.distantPast
+    private var cachedStatusMetric: String
+    private var cachedAnimationEnabled: Bool
+    private var cachedDetailedInterval: Int
     private var subscriptions: Set<AnyCancellable> = []
 
     init(model: AppModel, openDashboard: @escaping () -> Void, openSSDHealth: @escaping () -> Void, openSettings: @escaping () -> Void) {
@@ -181,6 +303,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.openDashboard = openDashboard
         self.openSSDHealth = openSSDHealth
         self.openSettings = openSettings
+        self.cachedStatusMetric = UserDefaults.standard.string(forKey: AppDefaults.statusMetric) ?? StatusMetric.cpu.rawValue
+        self.cachedAnimationEnabled = UserDefaults.standard.bool(forKey: AppDefaults.animationEnabled)
+        self.cachedDetailedInterval = UserDefaults.standard.integer(forKey: AppDefaults.detailedProcessInterval)
         super.init()
 
         popover.behavior = .transient
@@ -196,14 +321,30 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             button.toolTip = "PurrCore"
             button.font = AppFonts.statusItemButton
             button.wantsLayer = true
+            button.postsFrameChangedNotifications = true
 
             catLayer.contents = CatAsset.cgFrames.first
             catLayer.contentsGravity = .resizeAspect
-            catLayer.minificationFilter = .linear
+            catLayer.minificationFilter = .trilinear
             catLayer.magnificationFilter = .linear
-            catLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2
+            catLayer.contentsScale = button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
             button.layer?.addSublayer(catLayer)
             layoutCatLayer(in: button)
+
+            NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification, object: button)
+                .sink { [weak self, weak button] _ in
+                    guard let self, let button else { return }
+                    self.layoutCatLayer(in: button)
+                }
+                .store(in: &subscriptions)
+
+            NotificationCenter.default.publisher(for: NSWindow.didChangeBackingPropertiesNotification)
+                .sink { [weak self, weak button] notification in
+                    guard let self, let button, let window = button.window,
+                          notification.object as AnyObject? === window else { return }
+                    self.layoutCatLayer(in: button)
+                }
+                .store(in: &subscriptions)
         }
 
         model.$snapshot
@@ -225,9 +366,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
+                self?.handleUserDefaultsChanged()
+            }
+            .store(in: &subscriptions)
+
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
                 guard let self else { return }
-                self.lastTitleRefresh = Date()
-                self.refreshTitle(snapshot: self.model.snapshot)
                 self.animationSpeed = nil
                 self.refreshAnimation(cpuPercent: self.model.snapshot.cpuPercent)
             }
@@ -243,7 +389,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     func showPopover() {
         guard let button = statusItem.button else { return }
-        popover.contentSize = NSSize(width: 370, height: 600)
+        model.setSurface(.popover, active: true)
+        popover.contentSize = NSSize(width: 376, height: 616)
         popover.contentViewController = NSHostingController(
             rootView: MenuPanel(
                 model: model,
@@ -267,11 +414,36 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     func popoverDidClose(_ notification: Notification) {
+        model.setSurface(.popover, active: false)
         popover.contentViewController = nil
     }
 
+    private func handleUserDefaultsChanged() {
+        let currentMetric = UserDefaults.standard.string(forKey: AppDefaults.statusMetric) ?? StatusMetric.cpu.rawValue
+        let currentAnimation = UserDefaults.standard.bool(forKey: AppDefaults.animationEnabled)
+        let currentInterval = UserDefaults.standard.integer(forKey: AppDefaults.detailedProcessInterval)
+
+        let metricChanged = currentMetric != cachedStatusMetric
+        let animationChanged = currentAnimation != cachedAnimationEnabled
+        let intervalChanged = currentInterval != cachedDetailedInterval
+        guard metricChanged || animationChanged || intervalChanged else { return }
+
+        cachedStatusMetric = currentMetric
+        cachedAnimationEnabled = currentAnimation
+        cachedDetailedInterval = currentInterval
+
+        if metricChanged || intervalChanged {
+            lastTitleRefresh = Date()
+            refreshTitle(snapshot: model.snapshot)
+        }
+        if animationChanged {
+            animationSpeed = nil
+            refreshAnimation(cpuPercent: model.snapshot.cpuPercent)
+        }
+    }
+
     private func refreshTitleIfDue(snapshot: SystemSnapshot) {
-        let interval = max(UserDefaults.standard.integer(forKey: AppDefaults.detailedProcessInterval), 5)
+        let interval = max(cachedDetailedInterval, 5)
         guard Date().timeIntervalSince(lastTitleRefresh) >= Double(interval) else { return }
         lastTitleRefresh = Date()
         refreshTitle(snapshot: snapshot)
@@ -279,21 +451,19 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func refreshTitle(snapshot: SystemSnapshot) {
         guard let button = statusItem.button else { return }
-        let rawMetric = UserDefaults.standard.string(forKey: AppDefaults.statusMetric) ?? StatusMetric.cpu.rawValue
-        let metric = StatusMetric(rawValue: rawMetric) ?? .cpu
+        let metric = StatusMetric(rawValue: cachedStatusMetric) ?? .cpu
         let value = metric.menuBarValue(for: snapshot)
         let displayTitle = value.isEmpty ? "" : " " + value
         if button.title != displayTitle {
             button.title = displayTitle
         }
         button.setAccessibilityLabel(value.isEmpty ? "PurrCore" : "PurrCore, \(metric.title): \(value)")
-        button.layoutSubtreeIfNeeded()
         layoutCatLayer(in: button)
     }
 
     private func refreshAnimation(cpuPercent: Double, frames: [CGImage]? = nil) {
         let frames = frames ?? model.petAnimation ?? CatAsset.cgFrames
-        let shouldAnimate = UserDefaults.standard.bool(forKey: AppDefaults.animationEnabled)
+        let shouldAnimate = cachedAnimationEnabled
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         guard shouldAnimate, !frames.isEmpty else {
             catLayer.removeAnimation(forKey: "catRun")
@@ -339,7 +509,9 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             width: CatAsset.statusSlotSize.width,
             height: CatAsset.statusSlotSize.height
         )
-        let imageRect = button.cell?.imageRect(forBounds: button.bounds) ?? fallback
+        let imageRect = button.bounds.width > 0
+            ? (button.cell?.imageRect(forBounds: button.bounds) ?? fallback)
+            : fallback
         let height = button.bounds.height > 0 ? button.bounds.height : CatAsset.menuBarSize.height
         let frame = NSRect(
             x: imageRect.width > 0 ? imageRect.minX : fallback.minX,
@@ -347,9 +519,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             width: height * CatAsset.menuBarSize.width / CatAsset.menuBarSize.height,
             height: height
         )
+        let scale = button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        catLayer.frame = frame
+        if catLayer.contentsScale != scale {
+            catLayer.contentsScale = scale
+        }
+        if catLayer.frame != frame {
+            catLayer.frame = frame
+        }
         CATransaction.commit()
     }
 }
@@ -360,7 +538,7 @@ struct PurrCoreApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsView(model: AppServices.shared.model)
+            EmptyView()
         }
     }
 }

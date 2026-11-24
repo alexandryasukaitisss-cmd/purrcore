@@ -4,8 +4,11 @@ import SwiftUI
 @MainActor
 final class DashboardWindowController: NSObject, NSWindowDelegate {
     private var windowController: NSWindowController?
+    private weak var activeModel: AppModel?
 
     func show(model: AppModel) {
+        activeModel = model
+        model.setSurface(.dashboard, active: true)
         if let window = windowController?.window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -32,6 +35,8 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        activeModel?.setSurface(.dashboard, active: false)
+        activeModel = nil
         windowController?.window?.contentViewController = nil
         windowController = nil
     }
@@ -40,8 +45,11 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
 @MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var windowController: NSWindowController?
+    private weak var activeModel: AppModel?
 
     func show(model: AppModel) {
+        activeModel = model
+        model.setSurface(.settings, active: true)
         if let window = windowController?.window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -49,12 +57,14 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 520),
-            styleMask: [.titled, .closable],
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 640),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = tr("Настройки PurrCore")
+        window.minSize = NSSize(width: 560, height: 520)
+        window.setFrameAutosaveName("PurrCoreSettings")
         window.contentViewController = NSHostingController(rootView: SettingsView(model: model))
         window.delegate = self
         window.center()
@@ -66,6 +76,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        activeModel?.setSurface(.settings, active: false)
+        activeModel = nil
         windowController?.window?.contentViewController = nil
         windowController = nil
     }
@@ -74,8 +86,11 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 @MainActor
 final class SSDHealthWindowController: NSObject, NSWindowDelegate {
     private var windowController: NSWindowController?
+    private weak var activeModel: AppModel?
 
     func show(model: AppModel) {
+        activeModel = model
+        model.setSurface(.ssdHealth, active: true)
         if let window = windowController?.window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -102,6 +117,8 @@ final class SSDHealthWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        activeModel?.setSurface(.ssdHealth, active: false)
+        activeModel = nil
         windowController?.window?.contentViewController = nil
         windowController = nil
     }

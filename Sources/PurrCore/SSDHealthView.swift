@@ -207,7 +207,7 @@ struct SSDHealthView: View {
             .padding(20)
         }
         .frame(minWidth: 500, minHeight: 430)
-        .onAppear { model.refreshSSDHealth() }
+        .onAppear { model.refreshSSDHealthIfStale(threshold: 15) }
     }
 
     private func externalAnalysis(_ disk: ExternalSSDHealthReport) -> some View {

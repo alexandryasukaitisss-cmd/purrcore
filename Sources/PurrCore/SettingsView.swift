@@ -10,7 +10,8 @@ struct SettingsView: View {
     @AppStorage(AppDefaults.historyEnabled) private var historyEnabled = true
     @AppStorage(AppDefaults.statusMetric) private var statusMetric = StatusMetric.cpu.rawValue
     @AppStorage(AppDefaults.detailedProcessInterval) private var detailedProcessInterval = 5
-    @State private var launchAtLogin = false
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var suppressLaunchChange = false
     @State private var launchHint: String?
     @State private var batteryRetentionDays = 0
     @State private var pendingRetention: Int?
@@ -154,10 +155,14 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 580, height: 680)
+        .frame(minWidth: 560, minHeight: 520)
         .padding(.top, 6)
         .onAppear {
-            launchAtLogin = SMAppService.mainApp.status == .enabled
+            let current = SMAppService.mainApp.status == .enabled
+            if launchAtLogin != current {
+                suppressLaunchChange = true
+                launchAtLogin = current
+            }
             batteryRetentionDays = UserDefaults.standard.integer(forKey: AppDefaults.batteryRetentionDays)
         }
         .onChange(of: batteryRetentionDays) { _, days in
@@ -182,6 +187,10 @@ struct SettingsView: View {
             Text(tr("Завершённые разряды старше выбранного срока будут удалены, включая уже сохранённые. Это действие нельзя отменить."))
         }
         .onChange(of: launchAtLogin) { _, isEnabled in
+            if suppressLaunchChange {
+                suppressLaunchChange = false
+                return
+            }
             applyLaunchAtLogin(isEnabled)
         }
     }
@@ -226,7 +235,11 @@ struct SettingsView: View {
                 launchHint = nil
             }
         } catch {
-            launchAtLogin = SMAppService.mainApp.status == .enabled
+            let actual = SMAppService.mainApp.status == .enabled
+            if launchAtLogin != actual {
+                suppressLaunchChange = true
+                launchAtLogin = actual
+            }
             launchHint = error.localizedDescription
         }
     }
@@ -238,10 +251,6 @@ private struct StatusItemPreview: View {
     let animationEnabled: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    private var interval: TimeInterval {
-        CatSpeedPolicy.frameInterval(cpuPercent: model.snapshot.cpuPercent)
-    }
-
     private var metricValue: String {
         (StatusMetric(rawValue: metricRawValue) ?? .cpu).menuBarValue(for: model.snapshot)
     }
@@ -250,17 +259,12 @@ private struct StatusItemPreview: View {
         HStack {
             Spacer()
             HStack(spacing: 5) {
-                Group {
-                    if animationEnabled && !reduceMotion {
-                        TimelineView(.animation(minimumInterval: interval)) { context in
-                            let frame = Int(context.date.timeIntervalSinceReferenceDate / interval)
-                                % CatAnimationConfig.frameCount
-                            PetFrameImage(frame: frame, animation: model.petAnimation)
-                        }
-                    } else {
-                        PetFrameImage(frame: 0, animation: model.petAnimation)
-                    }
-                }
+                AnimatedPetView(
+                    cpuPercent: model.snapshot.cpuPercent,
+                    animationEnabled: animationEnabled,
+                    reduceMotion: reduceMotion,
+                    customFrames: model.petAnimation
+                )
                 .frame(width: CatAsset.menuBarSize.width, height: CatAsset.menuBarSize.height)
 
                 if !metricValue.isEmpty {

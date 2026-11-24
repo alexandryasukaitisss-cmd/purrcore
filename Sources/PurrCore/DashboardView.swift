@@ -38,9 +38,27 @@ private enum DashboardSection: String, CaseIterable, Identifiable {
     }
 }
 
+private enum ProcessScope: String, CaseIterable, Identifiable {
+    case live
+    case history
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .live: tr("Сейчас")
+        case .history: tr("За период")
+        }
+    }
+}
+
 struct DashboardView: View {
     @ObservedObject var model: AppModel
     @State private var selection: DashboardSection? = .overview
+
+    private var activeSection: DashboardSection {
+        selection ?? .overview
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -56,7 +74,7 @@ struct DashboardView: View {
             VStack(spacing: 0) {
                 dashboardToolbar
                 Divider()
-                detail(for: selection ?? .overview)
+                detail(for: activeSection)
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
@@ -66,21 +84,25 @@ struct DashboardView: View {
     private var dashboardToolbar: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text((selection ?? .overview).title)
+                Text(activeSection.title)
                     .font(.title2.weight(.semibold))
-                Text(tr("История хранится локально 7 дней"))
+                Text(activeSection == .usage
+                    ? tr("Фактическое время работы без сна и выключений")
+                    : tr("История хранится локально 7 дней"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            Picker(tr("Период"), selection: $model.selectedRange) {
-                ForEach(HistoryRange.allCases) { range in
-                    Text(tr(range.title)).tag(range)
+            if activeSection != .usage {
+                Picker(tr("Период"), selection: $model.selectedRange) {
+                    ForEach(HistoryRange.allCases) { range in
+                        Text(tr(range.title)).tag(range)
+                    }
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 210)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 210)
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 14)
@@ -110,6 +132,16 @@ struct DashboardView: View {
 private struct OverviewDashboard: View {
     @ObservedObject var model: AppModel
 
+    private var memoryDetail: String {
+        let base = tr(
+            "из %@ · давление %@",
+            String(describing: MetricFormat.bytes(model.snapshot.memory.totalBytes)),
+            String(describing: MetricFormat.pressure(model.snapshot.memory.pressure))
+        )
+        guard model.snapshot.memory.swapUsedBytes > 0 else { return base }
+        return "\(base) · Swap \(MetricFormat.shortBytes(model.snapshot.memory.swapUsedBytes))"
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 14) {
@@ -121,15 +153,22 @@ private struct OverviewDashboard: View {
                 MetricHistoryCard(
                     title: tr("Процессор"),
                     value: MetricFormat.percent(model.snapshot.cpuPercent),
-                    detail: tr("общая загрузка"),
+                    detail: tr("доля от всего Mac"),
                     color: .blue,
                     points: model.displayedHistory,
-                    yValue: { $0.cpuPercent }
+                    yValue: { $0.cpuPercent },
+                    extraHeader: {
+                        CoreLoadStrip(
+                            perCoreCPU: model.snapshot.perCoreCPU,
+                            coreCount: model.snapshot.coreCount,
+                            compact: true
+                        )
+                    }
                 )
                 MetricHistoryCard(
                     title: tr("Память"),
                     value: MetricFormat.bytes(model.snapshot.memory.usedBytes),
-                    detail: tr("из %@ · давление %@", String(describing: MetricFormat.bytes(model.snapshot.memory.totalBytes)), String(describing: MetricFormat.pressure(model.snapshot.memory.pressure))),
+                    detail: memoryDetail,
                     color: .purple,
                     points: model.displayedHistory,
                     yValue: { Double($0.memoryUsedBytes) }
@@ -155,7 +194,7 @@ private struct OverviewDashboard: View {
                     ConsumerList(
                         title: tr("Больше всего процессора"),
                         samples: Array(model.snapshot.processes.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(6)),
-                        value: { MetricFormat.percent($0.cpuPercent) }
+                        value: { MetricFormat.processCPU($0, totalCores: model.snapshot.coreCount) }
                     )
                     ConsumerList(
                         title: tr("Больше всего памяти"),
@@ -259,7 +298,7 @@ private struct UsageDashboard: View {
                             }
                         }
                         .chartXAxis {
-                            AxisMarks(values: .stride(by: .day)) { value in
+                            AxisMarks(values: .stride(by: .day)) { _ in
                                 AxisValueLabel(format: .dateTime.weekday(.abbreviated))
                             }
                         }
@@ -389,21 +428,75 @@ private struct UsageLegend: View {
 
 private struct ProcessorDashboard: View {
     @ObservedObject var model: AppModel
+    @State private var scope: ProcessScope = .live
+
+    private var displayedProcesses: [ProcessGroupSample] {
+        switch scope {
+        case .live:
+            model.snapshot.processes.sorted { $0.cpuPercent > $1.cpuPercent }
+        case .history:
+            model.historicalCPUProcessGroups
+        }
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                HeroMetric(
-                    title: tr("Общая загрузка"),
-                    value: MetricFormat.percent(model.snapshot.cpuPercent),
-                    subtitle: tr("Кошка ускоряется вместе с этой величиной"),
-                    color: .blue
+                HStack(alignment: .center, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(tr("Общая загрузка"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(MetricFormat.percent(model.snapshot.cpuPercent))
+                            .font(.system(size: 32, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.blue)
+                            .monospacedDigit()
+                        Text(tr("Кошка ускоряется вместе с этой величиной · доля от всего Mac"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Text(tr("Загрузка по ядрам"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        CoreLoadStrip(
+                            perCoreCPU: model.snapshot.perCoreCPU,
+                            coreCount: model.snapshot.coreCount,
+                            compact: false
+                        )
+                    }
+                }
+                .cardStyle()
+
+                LargeHistoryChart(
+                    points: model.displayedHistory,
+                    color: .blue,
+                    yValue: { $0.cpuPercent },
+                    yFormat: { MetricFormat.axisPercent($0) },
+                    yDomain: 0...100
                 )
-                LargeHistoryChart(points: model.displayedHistory, color: .blue, yValue: { $0.cpuPercent })
+
                 ConsumerList(
                     title: tr("Понятные группы процессов"),
-                    samples: model.snapshot.processes.sorted { $0.cpuPercent > $1.cpuPercent },
-                    value: { MetricFormat.percent($0.cpuPercent) }
+                    subtitle: scope == .history
+                        ? tr("Средняя доля CPU за выбранный период (%@)", tr(model.selectedRange.title))
+                        : nil,
+                    emptyText: scope == .history
+                        ? tr("За выбранный период пока нет сохранённых срезов процессов.")
+                        : tr("Собираю подробный срез…"),
+                    samples: displayedProcesses,
+                    value: { MetricFormat.processCPU($0, totalCores: model.snapshot.coreCount) },
+                    headerAccessory: {
+                        Picker(tr("Режим"), selection: $scope) {
+                            ForEach(ProcessScope.allCases) { item in
+                                Text(item.title).tag(item)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 190)
+                    }
                 )
             }
             .padding(20)
@@ -413,17 +506,33 @@ private struct ProcessorDashboard: View {
 
 private struct MemoryDashboard: View {
     @ObservedObject var model: AppModel
+    @State private var scope: ProcessScope = .live
+
+    private var displayedProcesses: [ProcessGroupSample] {
+        switch scope {
+        case .live:
+            model.snapshot.processes.sorted { $0.residentBytes > $1.residentBytes }
+        case .history:
+            model.historicalMemoryProcessGroups
+        }
+    }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
                 HStack {
-                    HeroMetric(
-                        title: tr("Использовано"),
-                        value: MetricFormat.bytes(model.snapshot.memory.usedBytes),
-                        subtitle: tr("из %@", String(describing: MetricFormat.bytes(model.snapshot.memory.totalBytes))),
-                        color: .purple
-                    )
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(tr("Использовано"))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(MetricFormat.bytes(model.snapshot.memory.usedBytes))
+                            .font(.system(size: 32, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.purple)
+                            .monospacedDigit()
+                        Text(tr("из %@", String(describing: MetricFormat.bytes(model.snapshot.memory.totalBytes))))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                     Label(
                         tr("Давление: %@", String(describing: MetricFormat.pressure(model.snapshot.memory.pressure))),
@@ -446,11 +555,44 @@ private struct MemoryDashboard: View {
                 }
                 .cardStyle()
 
-                LargeHistoryChart(points: model.displayedHistory, color: .purple, yValue: { Double($0.memoryUsedBytes) })
+                LargeHistoryChart(
+                    title: tr("История памяти"),
+                    points: model.displayedHistory,
+                    color: .purple,
+                    yValue: { Double($0.memoryUsedBytes) },
+                    yFormat: { MetricFormat.shortBytes(UInt64(max($0, 0))) }
+                )
+
+                LargeHistoryChart(
+                    title: tr("История Swap"),
+                    trailingText: MetricFormat.bytes(model.snapshot.memory.swapUsedBytes),
+                    points: model.displayedHistory,
+                    color: .pink,
+                    height: 170,
+                    yValue: { Double($0.swapUsedBytes) },
+                    yFormat: { MetricFormat.shortBytes(UInt64(max($0, 0))) }
+                )
+
                 ConsumerList(
                     title: tr("Кто занимает память"),
-                    samples: model.snapshot.processes.sorted { $0.residentBytes > $1.residentBytes },
-                    value: { MetricFormat.bytes($0.residentBytes) }
+                    subtitle: scope == .history
+                        ? tr("Пик физической памяти за выбранный период (%@)", tr(model.selectedRange.title))
+                        : tr("Физическая память (как в Мониторинге системы)"),
+                    emptyText: scope == .history
+                        ? tr("За выбранный период пока нет сохранённых срезов процессов.")
+                        : tr("Собираю подробный срез…"),
+                    samples: displayedProcesses,
+                    value: { MetricFormat.bytes($0.residentBytes) },
+                    headerAccessory: {
+                        Picker(tr("Режим"), selection: $scope) {
+                            ForEach(ProcessScope.allCases) { item in
+                                Text(item.title).tag(item)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: 190)
+                    }
                 )
             }
             .padding(20)
@@ -499,7 +641,8 @@ private struct ThroughputDashboard: View {
                         kind == .network
                             ? point.networkDownloadBytesPerSecond + point.networkUploadBytesPerSecond
                             : point.diskReadBytesPerSecond + point.diskWriteBytesPerSecond
-                    }
+                    },
+                    yFormat: { MetricFormat.compactRate($0) }
                 )
             }
             .padding(20)
@@ -544,13 +687,32 @@ private struct TaskDashboard: View {
     }
 }
 
-private struct MetricHistoryCard: View {
+private struct MetricHistoryCard<ExtraHeader: View>: View {
     let title: String
     let value: String
     let detail: String
     let color: Color
     let points: [HistoryPoint]
     let yValue: (HistoryPoint) -> Double
+    let extraHeader: ExtraHeader
+
+    init(
+        title: String,
+        value: String,
+        detail: String,
+        color: Color,
+        points: [HistoryPoint],
+        yValue: @escaping (HistoryPoint) -> Double,
+        @ViewBuilder extraHeader: () -> ExtraHeader
+    ) {
+        self.title = title
+        self.value = value
+        self.detail = detail
+        self.color = color
+        self.points = points
+        self.yValue = yValue
+        self.extraHeader = extraHeader()
+    }
 
     var body: some View {
         HStack(spacing: 18) {
@@ -561,17 +723,39 @@ private struct MetricHistoryCard: View {
                 Text(value)
                     .font(.system(.title3, design: .rounded, weight: .semibold))
                     .monospacedDigit()
+                extraHeader
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .frame(width: 205, alignment: .leading)
+            .frame(width: 215, alignment: .leading)
 
             CompactHistoryChart(points: points, color: color, yValue: yValue)
         }
         .frame(maxWidth: .infinity)
         .cardStyle()
+    }
+}
+
+private extension MetricHistoryCard where ExtraHeader == EmptyView {
+    init(
+        title: String,
+        value: String,
+        detail: String,
+        color: Color,
+        points: [HistoryPoint],
+        yValue: @escaping (HistoryPoint) -> Double
+    ) {
+        self.init(
+            title: title,
+            value: value,
+            detail: detail,
+            color: color,
+            points: points,
+            yValue: yValue,
+            extraHeader: { EmptyView() }
+        )
     }
 }
 
@@ -603,12 +787,41 @@ private struct CompactHistoryChart: View {
 }
 
 private struct LargeHistoryChart: View {
+    var title: String? = nil
+    var trailingText: String? = nil
     let points: [HistoryPoint]
     let color: Color
+    var height: CGFloat = 260
     let yValue: (HistoryPoint) -> Double
+    let yFormat: (Double) -> String
+    var yDomain: ClosedRange<Double>? = nil
 
     var body: some View {
-        Chart(points) { point in
+        VStack(alignment: .leading, spacing: 10) {
+            if title != nil || trailingText != nil {
+                HStack {
+                    if let title {
+                        Text(title)
+                            .font(.headline)
+                    }
+                    Spacer()
+                    if let trailingText {
+                        Text(trailingText)
+                            .font(.callout.weight(.medium))
+                            .foregroundStyle(color)
+                            .monospacedDigit()
+                    }
+                }
+            }
+            chartBody
+                .frame(height: height)
+        }
+        .cardStyle()
+    }
+
+    @ViewBuilder
+    private var chartBody: some View {
+        let baseChart = Chart(points) { point in
             AreaMark(
                 x: .value(tr("Время"), point.timestamp),
                 y: .value(tr("Значение"), yValue(point))
@@ -624,13 +837,23 @@ private struct LargeHistoryChart: View {
             .lineStyle(.init(lineWidth: 2))
         }
         .chartYAxis {
-            AxisMarks(position: .leading) { _ in
+            AxisMarks(position: .leading) { value in
                 AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
-                AxisValueLabel()
+                AxisValueLabel {
+                    if let number = value.as(Double.self) {
+                        Text(yFormat(number))
+                            .font(.caption2)
+                            .monospacedDigit()
+                    }
+                }
             }
         }
-        .frame(height: 280)
-        .cardStyle()
+
+        if let yDomain {
+            baseChart.chartYScale(domain: yDomain)
+        } else {
+            baseChart
+        }
     }
 }
 
@@ -658,17 +881,47 @@ private struct HeroMetric: View {
     }
 }
 
-private struct ConsumerList: View {
+private struct ConsumerList<HeaderAccessory: View>: View {
     let title: String
+    var subtitle: String? = nil
+    var emptyText: String = tr("Собираю подробный срез…")
     let samples: [ProcessGroupSample]
     let value: (ProcessGroupSample) -> String
+    let headerAccessory: HeaderAccessory
+
+    init(
+        title: String,
+        subtitle: String? = nil,
+        emptyText: String = tr("Собираю подробный срез…"),
+        samples: [ProcessGroupSample],
+        value: @escaping (ProcessGroupSample) -> String,
+        @ViewBuilder headerAccessory: () -> HeaderAccessory
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.emptyText = emptyText
+        self.samples = samples
+        self.value = value
+        self.headerAccessory = headerAccessory()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Text(title)
-                .font(.headline)
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.headline)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                headerAccessory
+            }
             if samples.isEmpty {
-                Text(tr("Собираю подробный срез…"))
+                Text(emptyText)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 16)
             } else {
@@ -695,6 +948,25 @@ private struct ConsumerList: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardStyle()
+    }
+}
+
+private extension ConsumerList where HeaderAccessory == EmptyView {
+    init(
+        title: String,
+        subtitle: String? = nil,
+        emptyText: String = tr("Собираю подробный срез…"),
+        samples: [ProcessGroupSample],
+        value: @escaping (ProcessGroupSample) -> String
+    ) {
+        self.init(
+            title: title,
+            subtitle: subtitle,
+            emptyText: emptyText,
+            samples: samples,
+            value: value,
+            headerAccessory: { EmptyView() }
+        )
     }
 }
 

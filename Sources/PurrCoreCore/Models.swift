@@ -26,6 +26,20 @@ public enum MemoryPressureLevel: String, Codable, Sendable {
     case normal
     case warning
     case critical
+
+    public var severity: Int {
+        switch self {
+        case .normal: 0
+        case .warning: 1
+        case .critical: 2
+        }
+    }
+
+    public static func fromSeverity(_ value: Int) -> MemoryPressureLevel {
+        if value >= 2 { return .critical }
+        if value == 1 { return .warning }
+        return .normal
+    }
 }
 
 public enum ThermalLevel: String, Codable, Sendable {
@@ -34,6 +48,11 @@ public enum ThermalLevel: String, Codable, Sendable {
     case serious
     case critical
     case unknown
+}
+
+public enum ProcessHistorySort: String, Codable, Sendable {
+    case cpu
+    case memory
 }
 
 public struct MemorySnapshot: Codable, Equatable, Sendable {
@@ -112,11 +131,17 @@ public struct ProcessGroupSample: Identifiable, Codable, Equatable, Sendable {
         self.residentBytes = residentBytes
         self.processCount = max(processCount, 1)
     }
+
+    public func equivalentCores(totalCores: Int) -> Double {
+        cpuPercent / 100.0 * Double(max(totalCores, 1))
+    }
 }
 
 public struct SystemSnapshot: Codable, Equatable, Sendable {
     public let timestamp: Date
     public let cpuPercent: Double
+    public let coreCount: Int
+    public let perCoreCPU: [Double]
     public let memory: MemorySnapshot
     public let network: ThroughputSnapshot
     public let disk: ThroughputSnapshot
@@ -126,6 +151,8 @@ public struct SystemSnapshot: Codable, Equatable, Sendable {
     public init(
         timestamp: Date,
         cpuPercent: Double,
+        coreCount: Int = max(ProcessInfo.processInfo.activeProcessorCount, 1),
+        perCoreCPU: [Double] = [],
         memory: MemorySnapshot,
         network: ThroughputSnapshot,
         disk: ThroughputSnapshot,
@@ -134,6 +161,8 @@ public struct SystemSnapshot: Codable, Equatable, Sendable {
     ) {
         self.timestamp = timestamp
         self.cpuPercent = min(max(cpuPercent, 0), 100)
+        self.coreCount = max(coreCount, max(perCoreCPU.count, 1))
+        self.perCoreCPU = perCoreCPU.map { min(max($0, 0), 100) }
         self.memory = memory
         self.network = network
         self.disk = disk
@@ -141,9 +170,18 @@ public struct SystemSnapshot: Codable, Equatable, Sendable {
         self.processes = processes
     }
 
+    public func busyCoreCount(threshold: Double = 35) -> Int {
+        if !perCoreCPU.isEmpty {
+            return perCoreCPU.filter { $0 >= threshold }.count
+        }
+        return Int((cpuPercent / 100.0 * Double(coreCount)).rounded())
+    }
+
     public static let empty = SystemSnapshot(
         timestamp: .now,
         cpuPercent: 0,
+        coreCount: max(ProcessInfo.processInfo.activeProcessorCount, 1),
+        perCoreCPU: [],
         memory: MemorySnapshot(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
             usedBytes: 0,
@@ -167,6 +205,8 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
     public let timestamp: Date
     public let cpuPercent: Double
     public let memoryUsedBytes: UInt64
+    public let swapUsedBytes: UInt64
+    public let memoryPressure: MemoryPressureLevel
     public let networkDownloadBytesPerSecond: Double
     public let networkUploadBytesPerSecond: Double
     public let diskReadBytesPerSecond: Double
@@ -176,6 +216,8 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
         timestamp: Date,
         cpuPercent: Double,
         memoryUsedBytes: UInt64,
+        swapUsedBytes: UInt64 = 0,
+        memoryPressure: MemoryPressureLevel = .normal,
         networkDownloadBytesPerSecond: Double,
         networkUploadBytesPerSecond: Double,
         diskReadBytesPerSecond: Double,
@@ -184,6 +226,8 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
         self.timestamp = timestamp
         self.cpuPercent = cpuPercent
         self.memoryUsedBytes = memoryUsedBytes
+        self.swapUsedBytes = swapUsedBytes
+        self.memoryPressure = memoryPressure
         self.networkDownloadBytesPerSecond = networkDownloadBytesPerSecond
         self.networkUploadBytesPerSecond = networkUploadBytesPerSecond
         self.diskReadBytesPerSecond = diskReadBytesPerSecond
@@ -195,6 +239,8 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
             timestamp: snapshot.timestamp,
             cpuPercent: snapshot.cpuPercent,
             memoryUsedBytes: snapshot.memory.usedBytes,
+            swapUsedBytes: snapshot.memory.swapUsedBytes,
+            memoryPressure: snapshot.memory.pressure,
             networkDownloadBytesPerSecond: snapshot.network.downloadBytesPerSecond,
             networkUploadBytesPerSecond: snapshot.network.uploadBytesPerSecond,
             diskReadBytesPerSecond: snapshot.disk.downloadBytesPerSecond,
@@ -202,8 +248,8 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
         )
     }
 
-    /// Merges stored and live readings, preferring live values at matching timestamps,
-    /// then averages interior readings into a bounded, ordered series.
+    /// Merges stored and live readings, preferring live values at overlapping periods,
+    /// then time-buckets interior readings into a bounded, uniformly distributed series.
     public static func mergedAndDownsampled(
         stored: [HistoryPoint],
         live: [HistoryPoint],
@@ -216,6 +262,7 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
         let limit = max(maximumCount, 1)
         let firstLiveTimestamp = live.map(\.timestamp).filter { $0 >= since && $0 <= until }.min()
         var pointsByTimestamp: [TimeInterval: HistoryPoint] = [:]
+        pointsByTimestamp.reserveCapacity(stored.count + live.count)
         for point in stored where point.timestamp >= since && point.timestamp <= until
             && (firstLiveTimestamp.map { point.timestamp < $0 } ?? true) {
             pointsByTimestamp[point.timestamp.timeIntervalSince1970] = point
@@ -228,36 +275,62 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
         guard points.count > limit else { return points }
         guard limit > 1 else { return [points[points.count - 1]] }
 
-        let interiorCount = points.count - 2
+        let first = points[0]
+        let last = points[points.count - 1]
         let bucketCount = limit - 2
-        var result = [points[0]]
+        var result = [first]
         result.reserveCapacity(limit)
 
         if bucketCount > 0 {
-            for bucket in 0..<bucketCount {
-                let start = 1 + bucket * interiorCount / bucketCount
-                let end = 1 + (bucket + 1) * interiorCount / bucketCount
-                let readings = points[start..<end]
-                let count = Double(readings.count)
-                func average(_ value: (HistoryPoint) -> Double) -> Double {
-                    readings.reduce(0) { $0 + value($1) } / count
+            let firstTime = first.timestamp.timeIntervalSince1970
+            let lastTime = last.timestamp.timeIntervalSince1970
+            let totalSpan = lastTime - firstTime
+
+            if totalSpan > 0 {
+                var buckets: [[HistoryPoint]] = Array(repeating: [], count: bucketCount)
+                let bucketSpan = totalSpan / Double(bucketCount)
+                for index in 1..<(points.count - 1) {
+                    let point = points[index]
+                    let rawBucket = Int((point.timestamp.timeIntervalSince1970 - firstTime) / bucketSpan)
+                    let bucket = min(max(rawBucket, 0), bucketCount - 1)
+                    buckets[bucket].append(point)
                 }
-                result.append(
-                    HistoryPoint(
-                        timestamp: Date(timeIntervalSince1970: average { $0.timestamp.timeIntervalSince1970 }),
-                        cpuPercent: average(\.cpuPercent),
-                        memoryUsedBytes: UInt64(max(average { Double($0.memoryUsedBytes) }, 0)),
-                        networkDownloadBytesPerSecond: average(\.networkDownloadBytesPerSecond),
-                        networkUploadBytesPerSecond: average(\.networkUploadBytesPerSecond),
-                        diskReadBytesPerSecond: average(\.diskReadBytesPerSecond),
-                        diskWriteBytesPerSecond: average(\.diskWriteBytesPerSecond)
-                    )
-                )
+                for readings in buckets where !readings.isEmpty {
+                    result.append(averagePoint(readings))
+                }
+            } else {
+                let interiorCount = points.count - 2
+                for bucket in 0..<bucketCount {
+                    let start = 1 + bucket * interiorCount / bucketCount
+                    let end = 1 + (bucket + 1) * interiorCount / bucketCount
+                    if start < end {
+                        result.append(averagePoint(Array(points[start..<end])))
+                    }
+                }
             }
         }
 
-        result.append(points[points.count - 1])
+        result.append(last)
         return result
+    }
+
+    private static func averagePoint(_ readings: [HistoryPoint]) -> HistoryPoint {
+        let count = Double(readings.count)
+        func average(_ value: (HistoryPoint) -> Double) -> Double {
+            readings.reduce(0) { $0 + value($1) } / count
+        }
+        let maxSeverity = readings.map(\.memoryPressure.severity).max() ?? 0
+        return HistoryPoint(
+            timestamp: Date(timeIntervalSince1970: average { $0.timestamp.timeIntervalSince1970 }),
+            cpuPercent: average(\.cpuPercent),
+            memoryUsedBytes: UInt64(max(average { Double($0.memoryUsedBytes) }, 0)),
+            swapUsedBytes: UInt64(max(average { Double($0.swapUsedBytes) }, 0)),
+            memoryPressure: .fromSeverity(maxSeverity),
+            networkDownloadBytesPerSecond: average(\.networkDownloadBytesPerSecond),
+            networkUploadBytesPerSecond: average(\.networkUploadBytesPerSecond),
+            diskReadBytesPerSecond: average(\.diskReadBytesPerSecond),
+            diskWriteBytesPerSecond: average(\.diskWriteBytesPerSecond)
+        )
     }
 }
 
@@ -289,11 +362,19 @@ public struct ProcessDescriptor: Equatable, Sendable {
     public let displayName: String
     public let explanation: String
     public let category: ProcessCategory
+    public let explanationPriority: Int
 
-    public init(groupKey: String, displayName: String, explanation: String, category: ProcessCategory) {
+    public init(
+        groupKey: String,
+        displayName: String,
+        explanation: String,
+        category: ProcessCategory,
+        explanationPriority: Int = 0
+    ) {
         self.groupKey = groupKey
         self.displayName = displayName
         self.explanation = explanation
         self.category = category
+        self.explanationPriority = explanationPriority
     }
 }

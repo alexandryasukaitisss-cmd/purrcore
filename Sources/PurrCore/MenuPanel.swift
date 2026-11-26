@@ -155,14 +155,16 @@ struct MenuPanel: View {
                         .foregroundStyle(.primary)
                 }
 
-                HStack(spacing: 8) {
-                    Text(dischargeLabel)
-                    Text(batterySession.map { MetricFormat.compactDuration($0.awakeSeconds) } ?? "—")
-                        .foregroundStyle(.green)
-                    Spacer()
-                    Text("0–100")
-                    Text(model.usageReport.fullChargeEstimate.map { "≈ " + MetricFormat.compactDuration($0.seconds) } ?? "—")
-                        .foregroundStyle(.orange)
+                if model.hasInternalBattery {
+                    HStack(spacing: 8) {
+                        Text(dischargeLabel)
+                        Text(batterySession.map { MetricFormat.compactDuration($0.awakeSeconds) } ?? "—")
+                            .foregroundStyle(.green)
+                        Spacer()
+                        Text("0–100")
+                        Text(model.usageReport.fullChargeEstimate.map { "≈ " + MetricFormat.compactDuration($0.seconds) } ?? "—")
+                            .foregroundStyle(.orange)
+                    }
                 }
             }
             .font(.caption)
@@ -175,6 +177,9 @@ struct MenuPanel: View {
 
     private func usageAccessibilityLabel(batterySession: BatterySessionRecord?) -> String {
         let today = MetricFormat.duration(model.usageReport.todayAwakeSeconds)
+        guard model.hasInternalBattery else {
+            return tr("Сегодня без сна %@.", String(describing: today))
+        }
         let discharge = batterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? tr("нет данных")
         let estimate = model.usageReport.fullChargeEstimate.map { MetricFormat.duration($0.seconds) } ?? tr("нет оценки")
         return tr("Сегодня без сна %@. Работа от батареи %@. Оценка от нуля до ста процентов %@.", String(describing: today), String(describing: discharge), String(describing: estimate))

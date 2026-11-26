@@ -170,6 +170,7 @@
 "7 дней" = "7 days";
 "Размер базы" = "Database size";
 "Учёт бодрствования и батареи хранится только на этом Mac. Между компьютерами ничего не синхронизируется." = "Awake-time and battery tracking is stored only on this Mac. Nothing syncs between computers.";
+"Учёт бодрствования хранится только на этом Mac. Между компьютерами ничего не синхронизируется." = "Awake-time tracking is stored only on this Mac. Nothing syncs between computers.";
 "Все накопители…" = "All drives…";
 "Необязательный мост MemPalace" = "Optional MemPalace bridge";
 "Команда ставит отметки начала и конца задачи. PurrCore не читает содержимое памяти и не переносит туда сырые метрики." = "The command marks when a task starts and ends. PurrCore does not read memory contents or send raw metrics there.";
@@ -193,6 +194,7 @@
 "нет данных" = "no data";
 "нет оценки" = "no estimate";
 "Сегодня без сна %@. Работа от батареи %@. Оценка от нуля до ста процентов %@." = "Awake today %@. Battery use %@. Estimated 0–100% %@.";
+"Сегодня без сна %@." = "Awake today %@.";
 "%@% · Заряжается" = "%@% · Charging";
 "%@% · От сети" = "%@% · On power adapter";
 "%@% · На батарее" = "%@% · On battery";

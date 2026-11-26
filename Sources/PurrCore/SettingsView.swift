@@ -104,15 +104,19 @@ struct SettingsView: View {
                     .accessibilityLabel(tr("Хранить подробную историю ресурсов"))
                 LabeledContent(tr("История ресурсов"), value: tr("7 дней"))
                 LabeledContent(tr("Размер базы"), value: MetricFormat.bytes(model.databaseSizeBytes))
-                Picker(tr("История разрядов батареи"), selection: $batteryRetentionDays) {
-                    Text(tr("Хранить без ограничения")).tag(0)
-                    Text(tr("30 дней")).tag(30)
-                    Text(tr("90 дней")).tag(90)
-                    Text(tr("365 дней")).tag(365)
+                if model.hasInternalBattery {
+                    Picker(tr("История разрядов батареи"), selection: $batteryRetentionDays) {
+                        Text(tr("Хранить без ограничения")).tag(0)
+                        Text(tr("30 дней")).tag(30)
+                        Text(tr("90 дней")).tag(90)
+                        Text(tr("365 дней")).tag(365)
+                    }
+                    Text(tr("Срок применяется к завершённым разрядам. Текущий разряд сохраняется. Удаление старых разрядов может изменить оценку работы от полного заряда."))
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Text(tr("Срок применяется к завершённым разрядам. Текущий разряд сохраняется. Удаление старых разрядов может изменить оценку работы от полного заряда."))
-                    .font(.caption).foregroundStyle(.secondary)
-                Text(tr("Учёт бодрствования и батареи хранится только на этом Mac. Между компьютерами ничего не синхронизируется."))
+                Text(model.hasInternalBattery
+                    ? tr("Учёт бодрствования и батареи хранится только на этом Mac. Между компьютерами ничего не синхронизируется.")
+                    : tr("Учёт бодрствования хранится только на этом Mac. Между компьютерами ничего не синхронизируется."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

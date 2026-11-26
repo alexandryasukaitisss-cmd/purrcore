@@ -148,7 +148,7 @@ private struct OverviewDashboard: View {
                 if let error = model.historyError {
                     UsageUnavailableCard(message: error)
                 } else {
-                    UsageOverviewCard(report: model.usageReport)
+                    UsageOverviewCard(report: model.usageReport, showBattery: model.hasInternalBattery)
                 }
                 MetricHistoryCard(
                     title: tr("Процессор"),
@@ -239,18 +239,20 @@ private struct UsageDashboard: View {
                             subtitle: tr("сон и выключение не входят"),
                             color: .blue
                         )
-                        HeroMetric(
-                            title: model.usageReport.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд"),
-                            value: shownBatterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—",
-                            subtitle: batterySessionSubtitle,
-                            color: .green
-                        )
-                        HeroMetric(
-                            title: tr("Оценка 0–100%"),
-                            value: model.usageReport.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—",
-                            subtitle: estimateSubtitle,
-                            color: .orange
-                        )
+                        if model.hasInternalBattery {
+                            HeroMetric(
+                                title: model.usageReport.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд"),
+                                value: shownBatterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—",
+                                subtitle: batterySessionSubtitle,
+                                color: .green
+                            )
+                            HeroMetric(
+                                title: tr("Оценка 0–100%"),
+                                value: model.usageReport.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—",
+                                subtitle: estimateSubtitle,
+                                color: .orange
+                            )
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 14) {
@@ -258,33 +260,46 @@ private struct UsageDashboard: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(tr("Последние 7 дней"))
                                     .font(.headline)
-                                Text(tr("Фактическое бодрствование и его часть от батареи"))
+                                Text(model.hasInternalBattery
+                                    ? tr("Фактическое бодрствование и его часть от батареи")
+                                    : tr("Фактическое время работы без сна и выключений"))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            HStack(spacing: 12) {
-                                UsageLegend(label: tr("Всего"), color: .blue)
-                                UsageLegend(label: tr("От батареи"), color: .green)
+                            if model.hasInternalBattery {
+                                HStack(spacing: 12) {
+                                    UsageLegend(label: tr("Всего"), color: .blue)
+                                    UsageLegend(label: tr("От батареи"), color: .green)
+                                }
                             }
                         }
 
                         Chart(model.usageReport.daily) { point in
-                            BarMark(
-                                x: .value(tr("День"), point.day, unit: .day),
-                                y: .value(tr("Часы"), point.awakeSeconds / 3_600)
-                            )
-                            .position(by: .value(tr("Тип"), tr("Всего")))
-                            .foregroundStyle(.blue)
-                            .cornerRadius(4)
+                            if model.hasInternalBattery {
+                                BarMark(
+                                    x: .value(tr("День"), point.day, unit: .day),
+                                    y: .value(tr("Часы"), point.awakeSeconds / 3_600)
+                                )
+                                .position(by: .value(tr("Тип"), tr("Всего")))
+                                .foregroundStyle(.blue)
+                                .cornerRadius(4)
 
-                            BarMark(
-                                x: .value(tr("День"), point.day, unit: .day),
-                                y: .value(tr("Часы"), point.batteryAwakeSeconds / 3_600)
-                            )
-                            .position(by: .value(tr("Тип"), tr("От батареи")))
-                            .foregroundStyle(.green)
-                            .cornerRadius(4)
+                                BarMark(
+                                    x: .value(tr("День"), point.day, unit: .day),
+                                    y: .value(tr("Часы"), point.batteryAwakeSeconds / 3_600)
+                                )
+                                .position(by: .value(tr("Тип"), tr("От батареи")))
+                                .foregroundStyle(.green)
+                                .cornerRadius(4)
+                            } else {
+                                BarMark(
+                                    x: .value(tr("День"), point.day, unit: .day),
+                                    y: .value(tr("Часы"), point.awakeSeconds / 3_600)
+                                )
+                                .foregroundStyle(.blue)
+                                .cornerRadius(4)
+                            }
                         }
                         .chartYScale(domain: 0...(maximumHours * 1.15))
                         .chartYAxis {
@@ -341,6 +356,7 @@ private struct UsageDashboard: View {
 
 private struct UsageOverviewCard: View {
     let report: UsageReport
+    let showBattery: Bool
 
     private var batterySession: BatterySessionRecord? {
         report.currentBatterySession ?? report.latestBatterySession
@@ -362,16 +378,18 @@ private struct UsageOverviewCard: View {
                     value: MetricFormat.duration(report.todayAwakeSeconds),
                     color: .blue
                 )
-                UsageOverviewValue(
-                    label: report.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд"),
-                    value: batterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—",
-                    color: .green
-                )
-                UsageOverviewValue(
-                    label: "0–100%",
-                    value: report.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—",
-                    color: .orange
-                )
+                if showBattery {
+                    UsageOverviewValue(
+                        label: report.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд"),
+                        value: batterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—",
+                        color: .green
+                    )
+                    UsageOverviewValue(
+                        label: "0–100%",
+                        value: report.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—",
+                        color: .orange
+                    )
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -160,6 +160,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var externalSSDHealthError: String?
     @Published private(set) var battery: BatterySnapshot?
     @Published private(set) var usageReport = UsageReport.empty
+
+    var hasInternalBattery: Bool {
+        battery != nil
+    }
     @Published private(set) var petPhoto: NSImage?
     @Published private(set) var petAnimation: [CGImage]?
     @Published private(set) var importingPetAsset = false

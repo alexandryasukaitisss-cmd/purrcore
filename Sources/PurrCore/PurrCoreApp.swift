@@ -449,8 +449,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     func showPopover() {
         guard let button = statusItem.button else { return }
         model.setSurface(.popover, active: true)
-        popover.contentSize = NSSize(width: 376, height: 616)
-        popover.contentViewController = NSHostingController(
+        let hostingController = NSHostingController(
             rootView: MenuPanel(
                 model: model,
                 onOpenDashboard: { [weak self] in
@@ -467,6 +466,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
                 },
                 onQuit: { NSApp.terminate(nil) }
             )
+        )
+        hostingController.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = hostingController
+        let fittingHeight = hostingController.view.fittingSize.height
+        popover.contentSize = NSSize(
+            width: 376,
+            height: fittingHeight > 100 ? fittingHeight : (model.hasInternalBattery ? 616 : 560)
         )
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)

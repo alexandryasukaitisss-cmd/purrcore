@@ -16,7 +16,7 @@ Your pet can be a cat, dog, bird, or any other animal.
 
 ## What it does
 
-- Changes the pet's running speed with CPU load (resting calmly when CPU stays below 3%, with an adaptive outline for dark and light menu bars), shows total Mac CPU share (`0–100%`) alongside `P`/`E` core cluster activity on Apple Silicon, and lets you display `CPU`, `GPU`, `memory`, `network`, `disk`, or `thermal` status in the menu bar (or switch via right-click on the pet).
+- Changes the pet's running speed with CPU load (resting calmly when CPU stays below 3%), shows total Mac CPU share (`0–100%`) alongside `P`/`E` core cluster activity on Apple Silicon, and lets you display `CPU`, `GPU`, `memory`, `network`, `disk`, or `thermal` status in the menu bar (or switch via right-click on the pet).
 - Explains ~65 common macOS, WebKit, developer, and AI processes in plain language: `WindowServer` draws windows and screens, `kernel_task` handles drivers, power and temperature, and Spotlight processes search and index files.
 - Groups helper processes under their parent app, reports physical memory footprint (`ri_phys_footprint`), auto-sorts the popover's top consumers by `Memory` when `RAM` is selected in the menu bar (with a 1-click `CPU | Memory` toggle, plus hover/right-click actions to Reveal in Finder, Quit, or Force Quit user apps), and switches between live and historical rankings in Dashboard.
 - Shows Apple Silicon / macOS hardware GPU utilization (`IOAccelerator`), kernel memory pressure, Activity Monitor-aligned RAM breakdown, optional smart overload notifications, and history charts for CPU, GPU, memory, swap, network, and disk over 1 hour, 24 hours, or 7 days.
@@ -38,7 +38,7 @@ brew install --cask alexandryasukaitisss-cmd/tap/purrcore
 
 ### Option 2: Download prebuilt archive
 
-Download `PurrCore-0.6.0-macos-arm64.zip` from [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), unzip, and move `PurrCore.app` to `/Applications`.
+Download `PurrCore-0.6.1-macos-arm64.zip` from [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), unzip, and move `PurrCore.app` to `/Applications`.
 
 > [!NOTE]
 > **First launch on macOS (not Apple-notarized):** Prebuilt releases are ad-hoc signed, so macOS Gatekeeper will show *"Apple could not verify 'PurrCore' is free of malware"* on first launch. To open it once:

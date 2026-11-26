@@ -107,35 +107,11 @@ final class AnimatedPetNSView: NSView {
         petLayer.minificationFilter = .trilinear
         petLayer.magnificationFilter = .linear
         layer?.addSublayer(petLayer)
-        updateAppearanceOutline()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        updateAppearanceOutline()
-    }
-
-    private func updateAppearanceOutline() {
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if isDark {
-            petLayer.shadowColor = NSColor.white.cgColor
-            petLayer.shadowOpacity = 0.55
-            petLayer.shadowRadius = 1.1
-            petLayer.shadowOffset = .zero
-        } else {
-            petLayer.shadowColor = NSColor.black.cgColor
-            petLayer.shadowOpacity = 0.16
-            petLayer.shadowRadius = 0.75
-            petLayer.shadowOffset = CGSize(width: 0, height: -0.3)
-        }
-        CATransaction.commit()
     }
 
     override func layout() {
@@ -403,7 +379,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var cachedAnimationEnabled: Bool
     private var cachedDetailedInterval: Int
     private var subscriptions: Set<AnyCancellable> = []
-    private var appearanceObservation: NSKeyValueObservation?
     private var globalMouseMonitor: Any?
     private var localEventMonitor: Any?
     private var resignActiveObserver: NSObjectProtocol?
@@ -448,15 +423,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             catLayer.magnificationFilter = .linear
             catLayer.contentsScale = button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
             button.layer?.addSublayer(catLayer)
-            updateCatAppearanceShadow(for: button)
             layoutCatLayer(in: button)
-
-            appearanceObservation = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] button, _ in
-                Task { @MainActor [weak self, weak button] in
-                    guard let self, let button else { return }
-                    self.updateCatAppearanceShadow(for: button)
-                }
-            }
 
             NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification, object: button)
                 .sink { [weak self, weak button] _ in
@@ -516,24 +483,6 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
         refreshTitle(snapshot: model.snapshot)
         refreshAnimation(cpuPercent: model.snapshot.cpuPercent)
-    }
-
-    private func updateCatAppearanceShadow(for button: NSStatusBarButton) {
-        let isDark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        if isDark {
-            catLayer.shadowColor = NSColor.white.cgColor
-            catLayer.shadowOpacity = 0.65
-            catLayer.shadowRadius = 1.15
-            catLayer.shadowOffset = .zero
-        } else {
-            catLayer.shadowColor = NSColor.black.cgColor
-            catLayer.shadowOpacity = 0.20
-            catLayer.shadowRadius = 0.75
-            catLayer.shadowOffset = CGSize(width: 0, height: -0.3)
-        }
-        CATransaction.commit()
     }
 
     @objc private func handleStatusBarClick() {

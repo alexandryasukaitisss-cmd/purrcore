@@ -31,7 +31,7 @@ final class AppUpdater: ObservableObject {
         let rawSHA = info?["GitCommitSHA"] as? String
         self.localCommitSHA = CommitUpdateEvaluator.normalizeSHA(rawSHA)
         self.localShortSHA = localCommitSHA.map(CommitUpdateEvaluator.shortSHA) ?? "dev"
-        self.localVersion = (info?["CFBundleShortVersionString"] as? String) ?? "0.6.0"
+        self.localVersion = (info?["CFBundleShortVersionString"] as? String) ?? "0.6.1"
 
         startPeriodicChecks()
     }

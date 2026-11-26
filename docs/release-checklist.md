@@ -1,6 +1,6 @@
 # Before a stable binary release
 
-- [x] Core suite: 59 tests and a local release build on Apple Silicon (v0.5.1: pure AppKit lifecycle removing ghost empty SwiftUI Settings window on macOS 15/26 activation; v0.5.0: Mach timebase CPU% fix, physical memory footprint, kernel memory pressure, Swap history v2 schema, per-core visualization, lazy background polling, safe resource bundle lookup).
+- [x] Core suite: 59 tests and a local release build on Apple Silicon (v0.5.2: reliable click-outside, Esc, and app-switch dismissal for the menu bar popover with zero idle monitors; v0.5.1: pure AppKit lifecycle removing ghost empty SwiftUI Settings window on macOS 15/26 activation; v0.5.0: Mach timebase CPU% fix, physical memory footprint, kernel memory pressure, Swap history v2 schema, per-core visualization, lazy background polling, safe resource bundle lookup).
 - [x] Pet import, persistence, reset and running toggle tested in the rendered app.
 - [x] MacBook battery operation, discharge estimates and awake-time tracking confirmed by the owner on 2026-10-04.
 - [x] Russian/English localization and named accessibility labels implemented. English settings inspected in the rendered app.

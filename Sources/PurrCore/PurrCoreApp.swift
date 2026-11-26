@@ -352,6 +352,10 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var cachedAnimationEnabled: Bool
     private var cachedDetailedInterval: Int
     private var subscriptions: Set<AnyCancellable> = []
+    private var globalMouseMonitor: Any?
+    private var localEventMonitor: Any?
+    private var resignActiveObserver: NSObjectProtocol?
+    private var workspaceActivateObserver: NSObjectProtocol?
 
     init(model: AppModel, openDashboard: @escaping () -> Void, openSSDHealth: @escaping () -> Void, openSettings: @escaping () -> Void) {
         self.model = model
@@ -363,7 +367,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         self.cachedDetailedInterval = UserDefaults.standard.integer(forKey: AppDefaults.detailedProcessInterval)
         super.init()
 
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
         popover.animates = true
         popover.delegate = self
 
@@ -439,7 +443,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func togglePopover() {
-        popover.isShown ? popover.performClose(nil) : showPopover()
+        popover.isShown ? closePopover() : showPopover()
     }
 
     func showPopover() {
@@ -450,15 +454,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             rootView: MenuPanel(
                 model: model,
                 onOpenDashboard: { [weak self] in
-                    self?.popover.performClose(nil)
+                    self?.closePopover()
                     self?.openDashboard()
                 },
                 onOpenSSDHealth: { [weak self] in
-                    self?.popover.performClose(nil)
+                    self?.closePopover()
                     self?.openSSDHealth()
                 },
                 onOpenSettings: { [weak self] in
-                    self?.popover.performClose(nil)
+                    self?.closePopover()
                     self?.openSettings()
                 },
                 onQuit: { NSApp.terminate(nil) }
@@ -466,11 +470,122 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         )
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)
+        popover.contentViewController?.view.window?.makeKey()
+        installDismissMonitors()
+    }
+
+    func closePopover() {
+        removeDismissMonitors()
+        if popover.isShown {
+            popover.performClose(nil)
+        }
     }
 
     func popoverDidClose(_ notification: Notification) {
+        removeDismissMonitors()
         model.setSurface(.popover, active: false)
         popover.contentViewController = nil
+    }
+
+    private func installDismissMonitors() {
+        removeDismissMonitors()
+
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.popover.isShown else { return }
+                if !self.isPointInsidePopoverOrStatusButton(NSEvent.mouseLocation) {
+                    self.closePopover()
+                }
+            }
+        }
+
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+        ) { [weak self] event in
+            guard let self else { return event }
+            let eventType = event.type
+            let keyCode: UInt16? = eventType == .keyDown ? event.keyCode : nil
+            let eventWindowNumber = event.windowNumber
+            let shouldConsume: Bool = MainActor.assumeIsolated {
+                guard self.popover.isShown else { return false }
+                if let keyCode {
+                    if keyCode == 53 {
+                        self.closePopover()
+                        return true
+                    }
+                    return false
+                }
+                let popoverWindowNumber = self.popover.contentViewController?.view.window?.windowNumber
+                let statusWindowNumber = self.statusItem.button?.window?.windowNumber
+                if eventWindowNumber != popoverWindowNumber && eventWindowNumber != statusWindowNumber {
+                    self.closePopover()
+                }
+                return false
+            }
+            return shouldConsume ? nil : event
+        }
+
+        resignActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.popover.isShown else { return }
+                self.closePopover()
+            }
+        }
+
+        workspaceActivateObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            let activatedPID = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier
+            let currentPID = ProcessInfo.processInfo.processIdentifier
+            guard activatedPID != currentPID else { return }
+            Task { @MainActor [weak self] in
+                guard let self, self.popover.isShown else { return }
+                self.closePopover()
+            }
+        }
+    }
+
+    private func removeDismissMonitors() {
+        if let globalMouseMonitor {
+            NSEvent.removeMonitor(globalMouseMonitor)
+            self.globalMouseMonitor = nil
+        }
+        if let localEventMonitor {
+            NSEvent.removeMonitor(localEventMonitor)
+            self.localEventMonitor = nil
+        }
+        if let resignActiveObserver {
+            NotificationCenter.default.removeObserver(resignActiveObserver)
+            self.resignActiveObserver = nil
+        }
+        if let workspaceActivateObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivateObserver)
+            self.workspaceActivateObserver = nil
+        }
+    }
+
+    private func isPointInsidePopoverOrStatusButton(_ screenPoint: NSPoint) -> Bool {
+        if let popoverWindow = popover.contentViewController?.view.window,
+           popoverWindow.frame.contains(screenPoint)
+        {
+            return true
+        }
+        if let button = statusItem.button, let buttonWindow = button.window {
+            let buttonRectInWindow = button.convert(button.bounds, to: nil)
+            let buttonRectOnScreen = buttonWindow.convertToScreen(buttonRectInWindow)
+            if buttonRectOnScreen.contains(screenPoint) {
+                return true
+            }
+        }
+        return false
     }
 
     private func handleUserDefaultsChanged() {

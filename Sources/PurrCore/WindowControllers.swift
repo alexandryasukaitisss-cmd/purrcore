@@ -22,6 +22,7 @@ final class DashboardWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = "PurrCore"
+        window.isRestorable = false
         window.minSize = NSSize(width: 880, height: 600)
         window.setFrameAutosaveName("PurrCoreDashboard")
         window.contentViewController = NSHostingController(rootView: DashboardView(model: model))
@@ -63,6 +64,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = tr("Настройки PurrCore")
+        window.isRestorable = false
         window.minSize = NSSize(width: 560, height: 520)
         window.setFrameAutosaveName("PurrCoreSettings")
         window.contentViewController = NSHostingController(rootView: SettingsView(model: model))
@@ -104,6 +106,7 @@ final class SSDHealthWindowController: NSObject, NSWindowDelegate {
             defer: false
         )
         window.title = tr("Здоровье SSD")
+        window.isRestorable = false
         window.minSize = NSSize(width: 500, height: 430)
         window.setFrameAutosaveName("PurrCoreSSDHealth")
         window.contentViewController = NSHostingController(rootView: SSDHealthView(model: model))

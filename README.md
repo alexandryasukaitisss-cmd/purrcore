@@ -37,7 +37,7 @@ brew install --cask alexandryasukaitisss-cmd/tap/purrcore
 
 ### Option 2: Download prebuilt archive
 
-Download `PurrCore-0.5.0-macos-arm64.zip` from [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), unzip, and move `PurrCore.app` to `/Applications`.
+Download `PurrCore-0.5.1-macos-arm64.zip` from [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), unzip, and move `PurrCore.app` to `/Applications`.
 
 > [!NOTE]
 > **First launch on macOS (not Apple-notarized):** Prebuilt releases are ad-hoc signed, so macOS Gatekeeper will show *"Apple could not verify 'PurrCore' is free of malware"* on first launch. To open it once:

@@ -1,6 +1,8 @@
 name: macOS tests and builds
 on:
   push:
+    branches:
+      - main
     tags-ignore:
       - latest-main
   pull_request:

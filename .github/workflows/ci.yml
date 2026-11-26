@@ -1,5 +1,10 @@
 name: macOS tests and builds
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    tags-ignore:
+      - latest-main
+  pull_request:
+  workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -28,5 +33,58 @@ jobs:
           uname -m
           swift --version
       - run: swift test
-      - run: bash script/build_and_run.sh build
+      - run: PURRCORE_GIT_SHA="${{ github.sha }}" bash script/build_and_run.sh build
       - run: codesign --verify --deep --strict dist/PurrCore.app
+
+  publish-latest:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: macos-26
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build arm64 bundle with commit SHA
+        run: |
+          PURRCORE_GIT_SHA="${{ github.sha }}" bash script/build_and_run.sh build
+          codesign --verify --deep --strict dist/PurrCore.app
+          rm -f PurrCore-macos-arm64.zip
+          ditto -c -k --sequesterRsrc --keepParent dist/PurrCore.app PurrCore-macos-arm64.zip
+          SHA256=$(shasum -a 256 PurrCore-macos-arm64.zip | awk '{print $1}')
+          SHORT_SHA=$(printf '%s' "${{ github.sha }}" | cut -c1-7)
+          VERSION=$(plutil -extract CFBundleShortVersionString raw dist/PurrCore.app/Contents/Info.plist)
+          TITLE=$(git log -1 --pretty=%s)
+          BUILT_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          python3 - "$SHA256" "$SHORT_SHA" "$VERSION" "$TITLE" "$BUILT_AT" <<'PY'
+          import json, os, sys
+          sha256, short_sha, version, title, built_at = sys.argv[1:6]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          full_sha = os.environ["GITHUB_SHA"]
+          manifest = {
+              "repo": repo,
+              "branch": "main",
+              "sha": full_sha,
+              "short_sha": short_sha,
+              "version": version,
+              "commit_title": title,
+              "published_at": built_at,
+              "asset_name": "PurrCore-macos-arm64.zip",
+              "asset_url": f"https://github.com/{repo}/releases/download/latest-main/PurrCore-macos-arm64.zip",
+              "sha256": sha256,
+          }
+          with open("latest-main.json", "w", encoding="utf-8") as f:
+              json.dump(manifest, f, ensure_ascii=False, indent=2)
+          PY
+      - name: Publish rolling latest-main build
+        run: |
+          git tag -f latest-main "${{ github.sha }}"
+          git push -f origin latest-main
+          if gh release view latest-main >/dev/null 2>&1; then
+            gh release upload latest-main PurrCore-macos-arm64.zip latest-main.json --clobber
+            gh release edit latest-main --prerelease --latest=false --title "Latest main build (${GITHUB_SHA:0:7})" --notes "Automated arm64 build for commit ${GITHUB_SHA}."
+          else
+            gh release create latest-main PurrCore-macos-arm64.zip latest-main.json --prerelease --latest=false --title "Latest main build (${GITHUB_SHA:0:7})" --notes "Automated arm64 build for commit ${GITHUB_SHA}."
+          fi

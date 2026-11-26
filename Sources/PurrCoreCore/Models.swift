@@ -55,6 +55,12 @@ public enum ProcessHistorySort: String, Codable, Sendable {
     case memory
 }
 
+public enum CoreClusterKind: String, Codable, Equatable, Sendable {
+    case efficiency
+    case performance
+    case standard
+}
+
 public struct MemorySnapshot: Codable, Equatable, Sendable {
     public let totalBytes: UInt64
     public let usedBytes: UInt64
@@ -113,6 +119,9 @@ public struct ProcessGroupSample: Identifiable, Codable, Equatable, Sendable {
     public let cpuPercent: Double
     public let residentBytes: UInt64
     public let processCount: Int
+    public let representativePID: Int32?
+    public let bundlePath: String?
+    public let canTerminate: Bool
 
     public init(
         groupKey: String,
@@ -121,7 +130,10 @@ public struct ProcessGroupSample: Identifiable, Codable, Equatable, Sendable {
         category: ProcessCategory,
         cpuPercent: Double,
         residentBytes: UInt64,
-        processCount: Int
+        processCount: Int,
+        representativePID: Int32? = nil,
+        bundlePath: String? = nil,
+        canTerminate: Bool = false
     ) {
         self.groupKey = groupKey
         self.displayName = displayName
@@ -130,6 +142,9 @@ public struct ProcessGroupSample: Identifiable, Codable, Equatable, Sendable {
         self.cpuPercent = max(cpuPercent, 0)
         self.residentBytes = residentBytes
         self.processCount = max(processCount, 1)
+        self.representativePID = representativePID
+        self.bundlePath = bundlePath
+        self.canTerminate = canTerminate
     }
 
     public func equivalentCores(totalCores: Int) -> Double {
@@ -142,6 +157,8 @@ public struct SystemSnapshot: Codable, Equatable, Sendable {
     public let cpuPercent: Double
     public let coreCount: Int
     public let perCoreCPU: [Double]
+    public let coreClusters: [CoreClusterKind]
+    public let gpuPercent: Double?
     public let memory: MemorySnapshot
     public let network: ThroughputSnapshot
     public let disk: ThroughputSnapshot
@@ -153,6 +170,8 @@ public struct SystemSnapshot: Codable, Equatable, Sendable {
         cpuPercent: Double,
         coreCount: Int = max(ProcessInfo.processInfo.activeProcessorCount, 1),
         perCoreCPU: [Double] = [],
+        coreClusters: [CoreClusterKind] = [],
+        gpuPercent: Double? = nil,
         memory: MemorySnapshot,
         network: ThroughputSnapshot,
         disk: ThroughputSnapshot,
@@ -163,11 +182,29 @@ public struct SystemSnapshot: Codable, Equatable, Sendable {
         self.cpuPercent = min(max(cpuPercent, 0), 100)
         self.coreCount = max(coreCount, max(perCoreCPU.count, 1))
         self.perCoreCPU = perCoreCPU.map { min(max($0, 0), 100) }
+        self.coreClusters = coreClusters
+        self.gpuPercent = gpuPercent.map { min(max($0, 0), 100) }
         self.memory = memory
         self.network = network
         self.disk = disk
         self.thermalState = thermalState
         self.processes = processes
+    }
+
+    public var hasHeterogeneousCores: Bool {
+        coreClusters.count == perCoreCPU.count
+            && coreClusters.contains(.efficiency)
+            && coreClusters.contains(.performance)
+    }
+
+    public var efficiencyCoreLoads: [Double] {
+        guard hasHeterogeneousCores else { return [] }
+        return zip(coreClusters, perCoreCPU).compactMap { $0 == .efficiency ? $1 : nil }
+    }
+
+    public var performanceCoreLoads: [Double] {
+        guard hasHeterogeneousCores else { return [] }
+        return zip(coreClusters, perCoreCPU).compactMap { $0 == .performance ? $1 : nil }
     }
 
     public func busyCoreCount(threshold: Double = 35) -> Int {
@@ -182,6 +219,8 @@ public struct SystemSnapshot: Codable, Equatable, Sendable {
         cpuPercent: 0,
         coreCount: max(ProcessInfo.processInfo.activeProcessorCount, 1),
         perCoreCPU: [],
+        coreClusters: [],
+        gpuPercent: nil,
         memory: MemorySnapshot(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
             usedBytes: 0,
@@ -204,6 +243,7 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
 
     public let timestamp: Date
     public let cpuPercent: Double
+    public let gpuPercent: Double?
     public let memoryUsedBytes: UInt64
     public let swapUsedBytes: UInt64
     public let memoryPressure: MemoryPressureLevel
@@ -215,6 +255,7 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
     public init(
         timestamp: Date,
         cpuPercent: Double,
+        gpuPercent: Double? = nil,
         memoryUsedBytes: UInt64,
         swapUsedBytes: UInt64 = 0,
         memoryPressure: MemoryPressureLevel = .normal,
@@ -225,6 +266,7 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
     ) {
         self.timestamp = timestamp
         self.cpuPercent = cpuPercent
+        self.gpuPercent = gpuPercent.map { min(max($0, 0), 100) }
         self.memoryUsedBytes = memoryUsedBytes
         self.swapUsedBytes = swapUsedBytes
         self.memoryPressure = memoryPressure
@@ -238,6 +280,7 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
         self.init(
             timestamp: snapshot.timestamp,
             cpuPercent: snapshot.cpuPercent,
+            gpuPercent: snapshot.gpuPercent,
             memoryUsedBytes: snapshot.memory.usedBytes,
             swapUsedBytes: snapshot.memory.swapUsedBytes,
             memoryPressure: snapshot.memory.pressure,
@@ -320,9 +363,12 @@ public struct HistoryPoint: Identifiable, Codable, Equatable, Sendable {
             readings.reduce(0) { $0 + value($1) } / count
         }
         let maxSeverity = readings.map(\.memoryPressure.severity).max() ?? 0
+        let gpuReadings = readings.compactMap(\.gpuPercent)
+        let averageGPU = gpuReadings.isEmpty ? nil : (gpuReadings.reduce(0, +) / Double(gpuReadings.count))
         return HistoryPoint(
             timestamp: Date(timeIntervalSince1970: average { $0.timestamp.timeIntervalSince1970 }),
             cpuPercent: average(\.cpuPercent),
+            gpuPercent: averageGPU,
             memoryUsedBytes: UInt64(max(average { Double($0.memoryUsedBytes) }, 0)),
             swapUsedBytes: UInt64(max(average { Double($0.swapUsedBytes) }, 0)),
             memoryPressure: .fromSeverity(maxSeverity),

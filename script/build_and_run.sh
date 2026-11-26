@@ -6,6 +6,7 @@ APP_NAME="PurrCore"
 BUNDLE_ID="${PURRCORE_BUNDLE_ID:-io.github.purrcore.PurrCore}"
 MIN_SYSTEM_VERSION="14.0"
 SIGNING_IDENTITY="${PURRCORE_SIGNING_IDENTITY:--}"
+GIT_SHA="${PURRCORE_GIT_SHA:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -66,9 +67,11 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.5.3</string>
+  <string>0.6.0</string>
   <key>CFBundleVersion</key>
-  <string>8</string>
+  <string>9</string>
+  <key>GitCommitSHA</key>
+  <string>$GIT_SHA</string>
   <key>LSMinimumSystemVersion</key>
   <string>$MIN_SYSTEM_VERSION</string>
   <key>LSUIElement</key>

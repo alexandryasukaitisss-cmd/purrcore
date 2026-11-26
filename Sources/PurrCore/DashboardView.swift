@@ -160,11 +160,22 @@ private struct OverviewDashboard: View {
                     extraHeader: {
                         CoreLoadStrip(
                             perCoreCPU: model.snapshot.perCoreCPU,
+                            coreClusters: model.snapshot.coreClusters,
                             coreCount: model.snapshot.coreCount,
                             compact: true
                         )
                     }
                 )
+                if let gpu = model.snapshot.gpuPercent {
+                    MetricHistoryCard(
+                        title: tr("Графика (GPU)"),
+                        value: MetricFormat.percent(gpu),
+                        detail: tr("аппаратное ускорение"),
+                        color: .indigo,
+                        points: model.displayedHistory,
+                        yValue: { $0.gpuPercent ?? 0 }
+                    )
+                }
                 MetricHistoryCard(
                     title: tr("Память"),
                     value: MetricFormat.bytes(model.snapshot.memory.usedBytes),
@@ -480,6 +491,7 @@ private struct ProcessorDashboard: View {
                             .foregroundStyle(.secondary)
                         CoreLoadStrip(
                             perCoreCPU: model.snapshot.perCoreCPU,
+                            coreClusters: model.snapshot.coreClusters,
                             coreCount: model.snapshot.coreCount,
                             compact: false
                         )

@@ -256,7 +256,7 @@ final class HistoryStoreTests: XCTestCase {
         )
 
         let schemaVersion = await store.schemaVersion()
-        XCTAssertEqual(schemaVersion, 2)
+        XCTAssertEqual(schemaVersion, 3)
         XCTAssertEqual(points.count, 1)
         XCTAssertEqual(points.first?.cpuPercent, 42)
         XCTAssertEqual(points.first?.swapUsedBytes, 0)
@@ -270,7 +270,7 @@ final class HistoryStoreTests: XCTestCase {
 
         let store = try HistoryStore(url: fixture.databaseURL)
         let schemaVersion = await store.schemaVersion()
-        XCTAssertEqual(schemaVersion, 2)
+        XCTAssertEqual(schemaVersion, 3)
 
         let v2Timestamp = v1Timestamp.addingTimeInterval(15)
         try await store.addSystemSample(

@@ -29,6 +29,11 @@ public actor SystemSampler {
         var cpuPercent: Double
         var residentBytes: UInt64
         var processCount: Int
+        var representativePID: Int32?
+        var representativePriority: Int
+        var representativeWeight: Double
+        var bundlePath: String?
+        var canTerminate: Bool
     }
 
     private let hostPort: mach_port_t
@@ -36,6 +41,9 @@ public actor SystemSampler {
     private let timebaseNumer: UInt64
     private let timebaseDenom: UInt64
     private let coreCount: Int
+    private let coreClusters: [CoreClusterKind]
+    private let currentUID: uid_t
+    private let selfPID: Int32
 
     private var previousCPUTicks: CPUTicks?
     private var previousPerCoreTicks: [CPUTicks] = []
@@ -43,6 +51,7 @@ public actor SystemSampler {
     private var diskRates = CounterRateCalculator()
     private var previousProcesses: [ProcessKey: PreviousProcessValue] = [:]
     private var descriptorByProcessKey: [ProcessKey: ProcessDescriptor] = [:]
+    private var pathByProcessKey: [ProcessKey: String] = [:]
     private var descriptorCacheByPath: [String: ProcessDescriptor] = [:]
     private var pidPathBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
     private var lastProcessGroups: [ProcessGroupSample] = []
@@ -68,7 +77,11 @@ public actor SystemSampler {
             timebaseDenom = 1
         }
 
-        coreCount = max(ProcessInfo.processInfo.activeProcessorCount, 1)
+        let detectedCores = max(ProcessInfo.processInfo.activeProcessorCount, 1)
+        coreCount = detectedCores
+        coreClusters = Self.detectCoreClusters(expectedCoreCount: detectedCores)
+        currentUID = getuid()
+        selfPID = getpid()
     }
 
     deinit {
@@ -144,10 +157,185 @@ public actor SystemSampler {
         )
     }
 
+    /// Extracts GPU utilization percentage (0...100) from an IOAccelerator PerformanceStatistics dictionary.
+    public static func gpuUtilizationPercent(from statistics: [String: Any]) -> Double? {
+        if let direct = (statistics["Device Utilization %"] as? NSNumber)?.doubleValue {
+            return min(max(direct, 0), 100)
+        }
+        let renderer = (statistics["Renderer Utilization %"] as? NSNumber)?.doubleValue
+        let tiler = (statistics["Tiler Utilization %"] as? NSNumber)?.doubleValue
+        if renderer != nil || tiler != nil {
+            return min(max(max(renderer ?? 0, tiler ?? 0), 0), 100)
+        }
+        if let rawCore = (statistics["GPU Core Utilization"] as? NSNumber)?.doubleValue {
+            let scaled = rawCore > 100 ? (rawCore / 10_000_000.0) : rawCore
+            return min(max(scaled, 0), 100)
+        }
+        return nil
+    }
+
+    /// Extracts the outermost `.app` bundle path from an executable path (so nested Helpers resolve to the parent `.app`).
+    public static func outermostAppBundlePath(from executablePath: String) -> String? {
+        guard !executablePath.isEmpty,
+              let range = executablePath.range(of: ".app/")
+        else {
+            return nil
+        }
+        return String(executablePath[..<range.upperBound].dropLast())
+    }
+
+    public static func isPrimaryAppExecutable(path: String, bundlePath: String?) -> Bool {
+        guard let bundlePath, !path.isEmpty else { return false }
+        let prefix = bundlePath + "/Contents/MacOS/"
+        guard path.hasPrefix(prefix) else { return false }
+        let remainder = path.dropFirst(prefix.count)
+        return !remainder.isEmpty && !remainder.contains("/")
+    }
+
+    public static func isTerminableUserProcess(
+        pid: Int32,
+        uid: uid_t,
+        currentUID: uid_t,
+        selfPID: Int32,
+        category: ProcessCategory,
+        executablePath: String
+    ) -> Bool {
+        guard pid > 1, pid != selfPID, uid == currentUID, category != .system else {
+            return false
+        }
+        let protectedPrefixes = [
+            "/System/",
+            "/usr/libexec/",
+            "/sbin/",
+            "/usr/sbin/",
+            "/Library/Apple/"
+        ]
+        if protectedPrefixes.contains(where: { executablePath.hasPrefix($0) }) {
+            return false
+        }
+        return true
+    }
+
+    public static func detectCoreClusters(expectedCoreCount: Int) -> [CoreClusterKind] {
+        if let fromRegistry = detectCoreClustersFromIORegistry(expectedCoreCount: expectedCoreCount) {
+            return fromRegistry
+        }
+        return detectCoreClustersFromSysctl(expectedCoreCount: expectedCoreCount)
+    }
+
+    private static func detectCoreClustersFromIORegistry(expectedCoreCount: Int) -> [CoreClusterKind]? {
+        guard let matching = IOServiceNameMatching("cpus") else { return nil }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var byIndex: [Int: CoreClusterKind] = [:]
+        var cpusEntry = IOIteratorNext(iterator)
+        while cpusEntry != 0 {
+            var childIter: io_iterator_t = 0
+            if IORegistryEntryGetChildIterator(cpusEntry, kIODeviceTreePlane, &childIter) == KERN_SUCCESS {
+                var child = IOIteratorNext(childIter)
+                while child != 0 {
+                    if let idProp = IORegistryEntryCreateCFProperty(child, "logical-cpu-id" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue(),
+                       let typeProp = IORegistryEntryCreateCFProperty(child, "cluster-type" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue(),
+                       let logicalID = parseRegistryInt(idProp),
+                       let kind = parseClusterKind(typeProp)
+                    {
+                        byIndex[logicalID] = kind
+                    }
+                    IOObjectRelease(child)
+                    child = IOIteratorNext(childIter)
+                }
+                IOObjectRelease(childIter)
+            }
+            IOObjectRelease(cpusEntry)
+            cpusEntry = IOIteratorNext(iterator)
+        }
+
+        guard byIndex.count == expectedCoreCount else { return nil }
+        var ordered: [CoreClusterKind] = []
+        ordered.reserveCapacity(expectedCoreCount)
+        for idx in 0..<expectedCoreCount {
+            guard let kind = byIndex[idx] else { return nil }
+            ordered.append(kind)
+        }
+        guard ordered.contains(.efficiency) && ordered.contains(.performance) else {
+            return nil
+        }
+        return ordered
+    }
+
+    private static func parseRegistryInt(_ value: CFTypeRef) -> Int? {
+        if let num = value as? NSNumber {
+            return num.intValue
+        }
+        if let data = value as? Data, data.count >= 4 {
+            let raw = data.withUnsafeBytes { ptr in
+                ptr.loadUnaligned(as: UInt32.self)
+            }
+            return Int(UInt32(littleEndian: raw))
+        }
+        return nil
+    }
+
+    private static func parseClusterKind(_ value: CFTypeRef) -> CoreClusterKind? {
+        let str: String?
+        if let s = value as? String {
+            str = s
+        } else if let data = value as? Data {
+            str = String(decoding: data.prefix { $0 != 0 }, as: UTF8.self)
+        } else {
+            str = nil
+        }
+        guard let trimmed = str?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() else {
+            return nil
+        }
+        if trimmed.hasPrefix("E") { return .efficiency }
+        if trimmed.hasPrefix("P") { return .performance }
+        return nil
+    }
+
+    private static func detectCoreClustersFromSysctl(expectedCoreCount: Int) -> [CoreClusterKind] {
+        guard let levels = sysctlInt("hw.nperflevels"), levels >= 2 else { return [] }
+        var effCount = 0
+        var perfCount = 0
+        for level in 0..<levels {
+            let count = sysctlInt("hw.perflevel\(level).logicalcpu") ?? 0
+            let name = (sysctlString("hw.perflevel\(level).name") ?? "").lowercased()
+            if name.contains("eff") {
+                effCount += count
+            } else if name.contains("perf") {
+                perfCount += count
+            }
+        }
+        guard effCount > 0, perfCount > 0, effCount + perfCount == expectedCoreCount else {
+            return []
+        }
+        return Array(repeating: .efficiency, count: effCount) + Array(repeating: .performance, count: perfCount)
+    }
+
+    private static func sysctlInt(_ name: String) -> Int? {
+        var value: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname(name, &value, &size, nil, 0) == 0 else { return nil }
+        return Int(value)
+    }
+
+    private static func sysctlString(_ name: String) -> String? {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else { return nil }
+        return String(cString: buffer)
+    }
+
     public func sample(includeProcesses: Bool) -> SystemSnapshot {
         let date = Date()
         let timestamp = date.timeIntervalSince1970
         let (cpu, perCore) = sampleCPUWithCores()
+        let gpu = sampleGPUPercent()
         let memory = sampleMemory()
         let networkTotals = sampleNetworkTotals()
         let diskTotals = sampleDiskTotals()
@@ -166,11 +354,14 @@ public actor SystemSampler {
             lastProcessGroups = sampleProcesses(timestamp: timestamp)
         }
 
+        let matchedClusters = coreClusters.count == perCore.count ? coreClusters : []
         return SystemSnapshot(
             timestamp: date,
             cpuPercent: cpu,
             coreCount: max(perCore.count, coreCount),
             perCoreCPU: perCore,
+            coreClusters: matchedClusters,
+            gpuPercent: gpu,
             memory: memory,
             network: network,
             disk: disk,
@@ -415,6 +606,33 @@ public actor SystemSampler {
         return (read, write)
     }
 
+    private func sampleGPUPercent() -> Double? {
+        guard let matching = IOServiceMatching("IOAccelerator") else { return nil }
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMainPortDefault, matching, &iterator) == KERN_SUCCESS else {
+            return nil
+        }
+        defer { IOObjectRelease(iterator) }
+
+        var maxUtilization: Double?
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            if let stats = IORegistryEntryCreateCFProperty(
+                service,
+                "PerformanceStatistics" as CFString,
+                kCFAllocatorDefault,
+                0
+            )?.takeRetainedValue() as? [String: Any],
+               let util = Self.gpuUtilizationPercent(from: stats)
+            {
+                maxUtilization = max(maxUtilization ?? 0, util)
+            }
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+        return maxUtilization
+    }
+
     private func sampleProcesses(timestamp: TimeInterval) -> [ProcessGroupSample] {
         let requestedCapacity = max(Int(proc_listallpids(nil, 0)), 512) + 64
         var pids = [pid_t](repeating: 0, count: requestedCapacity)
@@ -427,6 +645,8 @@ public actor SystemSampler {
         currentValues.reserveCapacity(Int(count))
         var liveDescriptors: [ProcessKey: ProcessDescriptor] = [:]
         liveDescriptors.reserveCapacity(Int(count))
+        var livePaths: [ProcessKey: String] = [:]
+        livePaths.reserveCapacity(Int(count))
         var groups: [String: ProcessAccumulator] = [:]
 
         for pid in pids.prefix(Int(count)) where pid > 0 {
@@ -493,11 +713,14 @@ public actor SystemSampler {
             }
 
             let descriptor: ProcessDescriptor
-            if let cachedByKey = descriptorByProcessKey[key] {
+            let resolvedPath: String
+            if let cachedByKey = descriptorByProcessKey[key], let cachedPath = pathByProcessKey[key] {
                 descriptor = cachedByKey
+                resolvedPath = cachedPath
             } else {
                 let name = processName(from: &bsdInfo)
                 let path = processPath(pid: pid)
+                resolvedPath = path
                 let cacheKey = path.isEmpty ? name : path
                 if let cachedByPath = descriptorCacheByPath[cacheKey] {
                     descriptor = cachedByPath
@@ -507,6 +730,20 @@ public actor SystemSampler {
                 }
             }
             liveDescriptors[key] = descriptor
+            livePaths[key] = resolvedPath
+
+            let appBundle = Self.outermostAppBundlePath(from: resolvedPath)
+            let isMainAppBinary = Self.isPrimaryAppExecutable(path: resolvedPath, bundlePath: appBundle)
+            let repPriority = isMainAppBinary ? 2 : (appBundle != nil ? 1 : 0)
+            let repWeight = max(cpuPercent, 0) * 1_000_000_000.0 + Double(memoryFootprintBytes)
+            let terminable = Self.isTerminableUserProcess(
+                pid: pid,
+                uid: bsdInfo.pbi_uid,
+                currentUID: currentUID,
+                selfPID: selfPID,
+                category: descriptor.category,
+                executablePath: resolvedPath
+            )
 
             if var accumulator = groups[descriptor.groupKey] {
                 accumulator.cpuPercent += max(cpuPercent, 0)
@@ -515,19 +752,39 @@ public actor SystemSampler {
                 if descriptor.explanationPriority > accumulator.descriptor.explanationPriority {
                     accumulator.descriptor = descriptor
                 }
+                if accumulator.bundlePath == nil, let appBundle {
+                    accumulator.bundlePath = appBundle
+                }
+                if terminable && (repPriority > accumulator.representativePriority
+                    || (repPriority == accumulator.representativePriority && repWeight > accumulator.representativeWeight))
+                {
+                    accumulator.representativePID = pid
+                    accumulator.representativePriority = repPriority
+                    accumulator.representativeWeight = repWeight
+                    accumulator.canTerminate = true
+                    if let appBundle {
+                        accumulator.bundlePath = appBundle
+                    }
+                }
                 groups[descriptor.groupKey] = accumulator
             } else {
                 groups[descriptor.groupKey] = ProcessAccumulator(
                     descriptor: descriptor,
                     cpuPercent: max(cpuPercent, 0),
                     residentBytes: memoryFootprintBytes,
-                    processCount: 1
+                    processCount: 1,
+                    representativePID: terminable ? pid : nil,
+                    representativePriority: terminable ? repPriority : -1,
+                    representativeWeight: terminable ? repWeight : -1,
+                    bundlePath: appBundle,
+                    canTerminate: terminable
                 )
             }
         }
 
         previousProcesses = currentValues
         descriptorByProcessKey = liveDescriptors
+        pathByProcessKey = livePaths
         if descriptorCacheByPath.count > 2_000 {
             descriptorCacheByPath.removeAll(keepingCapacity: true)
         }
@@ -540,7 +797,10 @@ public actor SystemSampler {
                 category: value.descriptor.category,
                 cpuPercent: min(value.cpuPercent, 100),
                 residentBytes: value.residentBytes,
-                processCount: value.processCount
+                processCount: value.processCount,
+                representativePID: value.representativePID,
+                bundlePath: value.bundlePath,
+                canTerminate: value.canTerminate && value.representativePID != nil
             )
         }
         let cpuLeaders = allSamples.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(20)

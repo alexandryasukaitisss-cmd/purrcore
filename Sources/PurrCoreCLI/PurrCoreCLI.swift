@@ -73,9 +73,12 @@ private struct LiveProcess: Encodable {
 private struct LiveReport: Encodable {
     var timestamp: Date
     var cpuPercent: Double
+    var gpuPercent: Double?
     var coreCount: Int
     var busyCores: Int
     var perCoreCPU: [Double]
+    var efficiencyCoreCPU: [Double]
+    var performanceCoreCPU: [Double]
     var memory: LiveMemory
     var networkBps: LiveNetworkBps
     var diskBps: LiveDiskBps
@@ -85,9 +88,12 @@ private struct LiveReport: Encodable {
     enum CodingKeys: String, CodingKey {
         case timestamp
         case cpuPercent = "cpu_percent"
+        case gpuPercent = "gpu_percent"
         case coreCount = "core_count"
         case busyCores = "busy_cores"
         case perCoreCPU = "per_core_cpu"
+        case efficiencyCoreCPU = "efficiency_core_cpu"
+        case performanceCoreCPU = "performance_core_cpu"
         case memory
         case networkBps = "network_bps"
         case diskBps = "disk_bps"
@@ -397,9 +403,12 @@ struct PurrCoreCLI {
         LiveReport(
             timestamp: snapshot.timestamp,
             cpuPercent: snapshot.cpuPercent,
+            gpuPercent: snapshot.gpuPercent,
             coreCount: snapshot.coreCount,
             busyCores: snapshot.busyCoreCount(),
             perCoreCPU: snapshot.perCoreCPU,
+            efficiencyCoreCPU: snapshot.efficiencyCoreLoads,
+            performanceCoreCPU: snapshot.performanceCoreLoads,
             memory: LiveMemory(
                 usedBytes: snapshot.memory.usedBytes,
                 totalBytes: snapshot.memory.totalBytes,

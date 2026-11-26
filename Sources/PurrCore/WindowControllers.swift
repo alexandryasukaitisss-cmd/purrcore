@@ -48,9 +48,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var windowController: NSWindowController?
     private weak var activeModel: AppModel?
 
-    func show(model: AppModel) {
+    func show(model: AppModel, updater: AppUpdater) {
         activeModel = model
         model.setSurface(.settings, active: true)
+        updater.checkIfStale()
         if let window = windowController?.window {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(nil)
@@ -58,16 +59,16 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 600, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 600, height: 680),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = tr("Настройки PurrCore")
         window.isRestorable = false
-        window.minSize = NSSize(width: 560, height: 520)
+        window.minSize = NSSize(width: 560, height: 540)
         window.setFrameAutosaveName("PurrCoreSettings")
-        window.contentViewController = NSHostingController(rootView: SettingsView(model: model))
+        window.contentViewController = NSHostingController(rootView: SettingsView(model: model, updater: updater))
         window.delegate = self
         window.center()
 

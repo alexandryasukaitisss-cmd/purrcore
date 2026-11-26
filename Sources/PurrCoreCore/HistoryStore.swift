@@ -18,7 +18,7 @@ public enum HistoryStoreError: Error, LocalizedError {
 public actor HistoryStore {
     private let database: OpaquePointer
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    private static let currentSchemaVersion = 2
+    private static let currentSchemaVersion = 3
 
     public init(url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -46,25 +46,30 @@ public actor HistoryStore {
     public func addSystemSample(_ sample: SystemSnapshot) throws {
         let sql = """
         INSERT OR REPLACE INTO system_samples (
-            timestamp, cpu_percent, memory_used_bytes,
+            timestamp, cpu_percent, gpu_percent, memory_used_bytes,
             swap_used_bytes, memory_pressure,
             network_download_bps, network_upload_bps,
             disk_read_bps, disk_write_bps, thermal_state
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
 
         sqlite3_bind_double(statement, 1, sample.timestamp.timeIntervalSince1970)
         sqlite3_bind_double(statement, 2, sample.cpuPercent)
-        sqlite3_bind_int64(statement, 3, Int64(clamping: sample.memory.usedBytes))
-        sqlite3_bind_int64(statement, 4, Int64(clamping: sample.memory.swapUsedBytes))
-        bind(sample.memory.pressure.rawValue, to: 5, in: statement)
-        sqlite3_bind_double(statement, 6, sample.network.downloadBytesPerSecond)
-        sqlite3_bind_double(statement, 7, sample.network.uploadBytesPerSecond)
-        sqlite3_bind_double(statement, 8, sample.disk.downloadBytesPerSecond)
-        sqlite3_bind_double(statement, 9, sample.disk.uploadBytesPerSecond)
-        bind(sample.thermalState.rawValue, to: 10, in: statement)
+        if let gpu = sample.gpuPercent {
+            sqlite3_bind_double(statement, 3, gpu)
+        } else {
+            sqlite3_bind_null(statement, 3)
+        }
+        sqlite3_bind_int64(statement, 4, Int64(clamping: sample.memory.usedBytes))
+        sqlite3_bind_int64(statement, 5, Int64(clamping: sample.memory.swapUsedBytes))
+        bind(sample.memory.pressure.rawValue, to: 6, in: statement)
+        sqlite3_bind_double(statement, 7, sample.network.downloadBytesPerSecond)
+        sqlite3_bind_double(statement, 8, sample.network.uploadBytesPerSecond)
+        sqlite3_bind_double(statement, 9, sample.disk.downloadBytesPerSecond)
+        sqlite3_bind_double(statement, 10, sample.disk.uploadBytesPerSecond)
+        bind(sample.thermalState.rawValue, to: 11, in: statement)
         try stepDone(statement)
     }
 
@@ -321,7 +326,7 @@ public actor HistoryStore {
         let sql = """
         SELECT
             MIN(CAST((timestamp - ?) / ? AS INTEGER), ? - 1) AS bucket,
-            AVG(cpu_percent), AVG(memory_used_bytes),
+            AVG(cpu_percent), AVG(gpu_percent), AVG(memory_used_bytes),
             AVG(swap_used_bytes),
             MAX(CASE memory_pressure WHEN 'critical' THEN 2 WHEN 'warning' THEN 1 ELSE 0 END),
             AVG(network_download_bps), AVG(network_upload_bps),
@@ -344,17 +349,21 @@ public actor HistoryStore {
         while sqlite3_step(statement) == SQLITE_ROW {
             let bucketTimestamp = since.timeIntervalSince1970
                 + Double(sqlite3_column_int64(statement, 0)) * bucketWidth
+            let gpuPercent = sqlite3_column_type(statement, 2) == SQLITE_NULL
+                ? nil
+                : sqlite3_column_double(statement, 2)
             points.append(
                 HistoryPoint(
                     timestamp: Date(timeIntervalSince1970: min(max(bucketTimestamp, since.timeIntervalSince1970), until.timeIntervalSince1970)),
                     cpuPercent: sqlite3_column_double(statement, 1),
-                    memoryUsedBytes: UInt64(max(sqlite3_column_int64(statement, 2), 0)),
-                    swapUsedBytes: UInt64(max(sqlite3_column_int64(statement, 3), 0)),
-                    memoryPressure: .fromSeverity(Int(sqlite3_column_int(statement, 4))),
-                    networkDownloadBytesPerSecond: sqlite3_column_double(statement, 5),
-                    networkUploadBytesPerSecond: sqlite3_column_double(statement, 6),
-                    diskReadBytesPerSecond: sqlite3_column_double(statement, 7),
-                    diskWriteBytesPerSecond: sqlite3_column_double(statement, 8)
+                    gpuPercent: gpuPercent,
+                    memoryUsedBytes: UInt64(max(sqlite3_column_int64(statement, 3), 0)),
+                    swapUsedBytes: UInt64(max(sqlite3_column_int64(statement, 4), 0)),
+                    memoryPressure: .fromSeverity(Int(sqlite3_column_int(statement, 5))),
+                    networkDownloadBytesPerSecond: sqlite3_column_double(statement, 6),
+                    networkUploadBytesPerSecond: sqlite3_column_double(statement, 7),
+                    diskReadBytesPerSecond: sqlite3_column_double(statement, 8),
+                    diskWriteBytesPerSecond: sqlite3_column_double(statement, 9)
                 )
             )
         }
@@ -490,6 +499,7 @@ public actor HistoryStore {
         CREATE TABLE IF NOT EXISTS system_samples (
             timestamp REAL PRIMARY KEY,
             cpu_percent REAL NOT NULL,
+            gpu_percent REAL,
             memory_used_bytes INTEGER NOT NULL,
             swap_used_bytes INTEGER NOT NULL DEFAULT 0,
             memory_pressure TEXT NOT NULL DEFAULT 'normal',
@@ -547,6 +557,9 @@ public actor HistoryStore {
             }
             if !columns.contains("memory_pressure") {
                 try execute(on: database, sql: "ALTER TABLE system_samples ADD COLUMN memory_pressure TEXT NOT NULL DEFAULT 'normal';")
+            }
+            if !columns.contains("gpu_percent") {
+                try execute(on: database, sql: "ALTER TABLE system_samples ADD COLUMN gpu_percent REAL;")
             }
             if version < currentSchemaVersion {
                 try execute(on: database, sql: "PRAGMA user_version = \(currentSchemaVersion);")

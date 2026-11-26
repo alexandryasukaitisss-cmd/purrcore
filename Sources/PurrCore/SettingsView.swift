@@ -6,10 +6,14 @@ import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var updater: AppUpdater
     @AppStorage(AppDefaults.animationEnabled) private var animationEnabled = true
+    @AppStorage(AppDefaults.restWhenIdle) private var restWhenIdle = true
     @AppStorage(AppDefaults.historyEnabled) private var historyEnabled = true
     @AppStorage(AppDefaults.statusMetric) private var statusMetric = StatusMetric.cpu.rawValue
     @AppStorage(AppDefaults.detailedProcessInterval) private var detailedProcessInterval = 5
+    @AppStorage(AppDefaults.smartAlertsEnabled) private var smartAlertsEnabled = false
+    @AppStorage(AppDefaults.autoCheckUpdates) private var autoCheckUpdates = true
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var suppressLaunchChange = false
     @State private var launchHint: String?
@@ -18,6 +22,15 @@ struct SettingsView: View {
     @State private var confirmRetention = false
 
     private let integrationCommand = tr("purrcorectl run --source mempalace --task-id TASK_ID --label \"Название задачи\" -- команда аргументы")
+
+    private var availableMetrics: [StatusMetric] {
+        StatusMetric.allCases.filter { metric in
+            if metric == .gpu && model.snapshot.gpuPercent == nil {
+                return false
+            }
+            return true
+        }
+    }
 
     var body: some View {
         Form {
@@ -31,6 +44,29 @@ struct SettingsView: View {
                     Text(launchHint)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                Toggle(tr("Проверять обновления по последнему коммиту на GitHub"), isOn: $autoCheckUpdates)
+
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(tr("Версия %@ · коммит %@", updater.localVersion, updater.localShortSHA))
+                            .font(.callout)
+                        updateStatusLabel
+                    }
+                    Spacer()
+                    if let candidate = updater.availableCandidate {
+                        Button(tr("Обновить до %@ и перезапустить", candidate.shortSHA)) {
+                            updater.installAvailableUpdate()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(updater.isBusy)
+                    } else {
+                        Button(tr("Проверить обновления")) {
+                            updater.checkForUpdates(manual: true)
+                        }
+                        .disabled(updater.isBusy)
+                    }
                 }
             }
 
@@ -84,8 +120,10 @@ struct SettingsView: View {
                 }
                 Toggle(tr("Анимировать бег"), isOn: $animationEnabled)
                     .accessibilityLabel(tr("Анимировать бег"))
+                Toggle(tr("Дремать в простое (при нагрузке CPU < 3%)"), isOn: $restWhenIdle)
+                    .disabled(!animationEnabled)
                 Picker(tr("Показатель рядом с питомцем"), selection: $statusMetric) {
-                    ForEach(StatusMetric.allCases) { metric in
+                    ForEach(availableMetrics) { metric in
                         Text(tr(metric.title)).tag(metric.rawValue)
                     }
                 }
@@ -102,6 +140,7 @@ struct SettingsView: View {
                 }
                 Toggle(tr("Хранить подробную историю ресурсов"), isOn: $historyEnabled)
                     .accessibilityLabel(tr("Хранить подробную историю ресурсов"))
+                Toggle(tr("Умные уведомления о перегрузке, перегреве и нехватке места"), isOn: $smartAlertsEnabled)
                 LabeledContent(tr("История ресурсов"), value: tr("7 дней"))
                 LabeledContent(tr("Размер базы"), value: MetricFormat.bytes(model.databaseSizeBytes))
                 if model.hasInternalBattery {
@@ -159,7 +198,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(minWidth: 560, minHeight: 520)
+        .frame(minWidth: 560, minHeight: 540)
         .padding(.top, 6)
         .onAppear {
             let current = SMAppService.mainApp.status == .enabled
@@ -168,6 +207,14 @@ struct SettingsView: View {
                 launchAtLogin = current
             }
             batteryRetentionDays = UserDefaults.standard.integer(forKey: AppDefaults.batteryRetentionDays)
+        }
+        .onChange(of: restWhenIdle) { _, enabled in
+            model.updateRestPreference(enabled: enabled)
+        }
+        .onChange(of: smartAlertsEnabled) { _, enabled in
+            if enabled {
+                SmartAlertNotifier.requestAuthorizationIfNeeded()
+            }
         }
         .onChange(of: batteryRetentionDays) { _, days in
             guard days != UserDefaults.standard.integer(forKey: AppDefaults.batteryRetentionDays) else { return }
@@ -196,6 +243,49 @@ struct SettingsView: View {
                 return
             }
             applyLaunchAtLogin(isEnabled)
+        }
+    }
+
+    @ViewBuilder
+    private var updateStatusLabel: some View {
+        switch updater.state {
+        case .idle:
+            Text(tr("Проверяет свежие коммиты в ветке main на GitHub."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(tr("Проверяю последний коммит на GitHub…"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .upToDate(let shortSHA):
+            Text(tr("Установлена актуальная сборка (%@).", shortSHA))
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .buildPending(let shortSHA):
+            Text(tr("Новый коммит %@ сейчас собирается в GitHub Actions — попробуй через минуту.", shortSHA))
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .available(let candidate):
+            Text(candidate.commitTitle.isEmpty
+                ? tr("На GitHub доступна новая сборка %@.", candidate.shortSHA)
+                : tr("Новая сборка %@: %@", candidate.shortSHA, candidate.commitTitle))
+                .font(.caption)
+                .foregroundStyle(.blue)
+                .lineLimit(2)
+        case .installing(let progressText):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text(progressText)
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+            }
+        case .failed(let message):
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.orange)
         }
     }
 
@@ -266,6 +356,7 @@ private struct StatusItemPreview: View {
                 AnimatedPetView(
                     cpuPercent: model.snapshot.cpuPercent,
                     animationEnabled: animationEnabled,
+                    isResting: model.isPetResting,
                     reduceMotion: reduceMotion,
                     customFrames: model.petAnimation
                 )

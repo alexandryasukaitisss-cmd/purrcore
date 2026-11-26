@@ -59,8 +59,23 @@ struct PetFrameImage: View {
 struct AnimatedPetView: NSViewRepresentable {
     let cpuPercent: Double
     let animationEnabled: Bool
+    let isResting: Bool
     let reduceMotion: Bool
     let customFrames: [CGImage]?
+
+    init(
+        cpuPercent: Double,
+        animationEnabled: Bool,
+        isResting: Bool = false,
+        reduceMotion: Bool,
+        customFrames: [CGImage]?
+    ) {
+        self.cpuPercent = cpuPercent
+        self.animationEnabled = animationEnabled
+        self.isResting = isResting
+        self.reduceMotion = reduceMotion
+        self.customFrames = customFrames
+    }
 
     func makeNSView(context: Context) -> AnimatedPetNSView {
         AnimatedPetNSView()
@@ -71,7 +86,8 @@ struct AnimatedPetView: NSViewRepresentable {
         view.update(
             frames: frames,
             cpuPercent: cpuPercent,
-            shouldAnimate: animationEnabled && !reduceMotion
+            shouldAnimate: animationEnabled && !reduceMotion && !isResting,
+            isResting: isResting
         )
     }
 }
@@ -82,6 +98,7 @@ final class AnimatedPetNSView: NSView {
     private var currentFrameCount = 0
     private var currentFirstFrame: CGImage?
     private var currentSpeed: Float?
+    private var currentResting: Bool?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -90,11 +107,35 @@ final class AnimatedPetNSView: NSView {
         petLayer.minificationFilter = .trilinear
         petLayer.magnificationFilter = .linear
         layer?.addSublayer(petLayer)
+        updateAppearanceOutline()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearanceOutline()
+    }
+
+    private func updateAppearanceOutline() {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if isDark {
+            petLayer.shadowColor = NSColor.white.cgColor
+            petLayer.shadowOpacity = 0.55
+            petLayer.shadowRadius = 1.1
+            petLayer.shadowOffset = .zero
+        } else {
+            petLayer.shadowColor = NSColor.black.cgColor
+            petLayer.shadowOpacity = 0.16
+            petLayer.shadowRadius = 0.75
+            petLayer.shadowOffset = CGSize(width: 0, height: -0.3)
+        }
+        CATransaction.commit()
     }
 
     override func layout() {
@@ -120,22 +161,29 @@ final class AnimatedPetNSView: NSView {
         CATransaction.commit()
     }
 
-    func update(frames: [CGImage], cpuPercent: Double, shouldAnimate: Bool) {
+    func update(frames: [CGImage], cpuPercent: Double, shouldAnimate: Bool, isResting: Bool) {
         let framesChanged = frames.count != currentFrameCount || frames.first !== currentFirstFrame
         if framesChanged {
             currentFrameCount = frames.count
             currentFirstFrame = frames.first
             petLayer.removeAnimation(forKey: "petRun")
             currentSpeed = nil
+            currentResting = nil
         }
 
         guard shouldAnimate, !frames.isEmpty else {
             petLayer.removeAnimation(forKey: "petRun")
-            petLayer.contents = frames.first
+            if !frames.isEmpty {
+                let idx = isResting ? min(CatSpeedPolicy.restingFrameIndex, frames.count - 1) : 0
+                petLayer.contents = frames[idx]
+            } else {
+                petLayer.contents = nil
+            }
             petLayer.speed = 1
             petLayer.timeOffset = 0
             petLayer.beginTime = 0
             currentSpeed = nil
+            currentResting = isResting
             return
         }
 
@@ -170,6 +218,7 @@ final class AppServices {
     static let shared = AppServices()
 
     let model = AppModel()
+    let updater = AppUpdater()
     let dashboardController = DashboardWindowController()
     let ssdHealthController = SSDHealthWindowController()
     let settingsController = SettingsWindowController()
@@ -229,9 +278,10 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
         )
         statusController = StatusItemController(
             model: services.model,
+            updater: services.updater,
             openDashboard: { services.dashboardController.show(model: services.model) },
             openSSDHealth: { services.ssdHealthController.show(model: services.model) },
-            openSettings: { services.settingsController.show(model: services.model) }
+            openSettings: { services.settingsController.show(model: services.model, updater: services.updater) }
         )
 
         if arguments.contains("--show-dashboard") {
@@ -240,7 +290,7 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
             }
         } else if arguments.contains("--show-settings") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                services.settingsController.show(model: services.model)
+                services.settingsController.show(model: services.model, updater: services.updater)
             }
         } else if arguments.contains("--show-menu") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
@@ -321,7 +371,7 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettingsFromMenu() {
         let services = AppServices.shared
-        services.settingsController.show(model: services.model)
+        services.settingsController.show(model: services.model, updater: services.updater)
     }
 
     @objc private func systemWillSleep(_ notification: Notification) {
@@ -342,6 +392,7 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let popover = NSPopover()
     private let model: AppModel
+    private let updater: AppUpdater
     private let openDashboard: () -> Void
     private let openSSDHealth: () -> Void
     private let openSettings: () -> Void
@@ -352,13 +403,21 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     private var cachedAnimationEnabled: Bool
     private var cachedDetailedInterval: Int
     private var subscriptions: Set<AnyCancellable> = []
+    private var appearanceObservation: NSKeyValueObservation?
     private var globalMouseMonitor: Any?
     private var localEventMonitor: Any?
     private var resignActiveObserver: NSObjectProtocol?
     private var workspaceActivateObserver: NSObjectProtocol?
 
-    init(model: AppModel, openDashboard: @escaping () -> Void, openSSDHealth: @escaping () -> Void, openSettings: @escaping () -> Void) {
+    init(
+        model: AppModel,
+        updater: AppUpdater,
+        openDashboard: @escaping () -> Void,
+        openSSDHealth: @escaping () -> Void,
+        openSettings: @escaping () -> Void
+    ) {
         self.model = model
+        self.updater = updater
         self.openDashboard = openDashboard
         self.openSSDHealth = openSSDHealth
         self.openSettings = openSettings
@@ -373,7 +432,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
         if let button = statusItem.button {
             button.target = self
-            button.action = #selector(togglePopover)
+            button.action = #selector(handleStatusBarClick)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
             button.imagePosition = .imageLeading
             button.imageScaling = .scaleNone
             button.image = CatAsset.placeholder
@@ -388,7 +448,15 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             catLayer.magnificationFilter = .linear
             catLayer.contentsScale = button.window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
             button.layer?.addSublayer(catLayer)
+            updateCatAppearanceShadow(for: button)
             layoutCatLayer(in: button)
+
+            appearanceObservation = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] button, _ in
+                Task { @MainActor [weak self, weak button] in
+                    guard let self, let button else { return }
+                    self.updateCatAppearanceShadow(for: button)
+                }
+            }
 
             NotificationCenter.default.publisher(for: NSView.frameDidChangeNotification, object: button)
                 .sink { [weak self, weak button] _ in
@@ -410,6 +478,14 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
             .sink { [weak self] snapshot in
                 self?.refreshTitleIfDue(snapshot: snapshot)
                 self?.refreshAnimation(cpuPercent: snapshot.cpuPercent)
+            }
+            .store(in: &subscriptions)
+
+        model.$isPetResting
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.animationSpeed = nil
+                self.refreshAnimation(cpuPercent: self.model.snapshot.cpuPercent)
             }
             .store(in: &subscriptions)
 
@@ -442,6 +518,123 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         refreshAnimation(cpuPercent: model.snapshot.cpuPercent)
     }
 
+    private func updateCatAppearanceShadow(for button: NSStatusBarButton) {
+        let isDark = button.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if isDark {
+            catLayer.shadowColor = NSColor.white.cgColor
+            catLayer.shadowOpacity = 0.65
+            catLayer.shadowRadius = 1.15
+            catLayer.shadowOffset = .zero
+        } else {
+            catLayer.shadowColor = NSColor.black.cgColor
+            catLayer.shadowOpacity = 0.20
+            catLayer.shadowRadius = 0.75
+            catLayer.shadowOffset = CGSize(width: 0, height: -0.3)
+        }
+        CATransaction.commit()
+    }
+
+    @objc private func handleStatusBarClick() {
+        if let event = NSApp.currentEvent,
+           event.type == .rightMouseUp || event.modifierFlags.contains(.control)
+        {
+            closePopover()
+            showQuickContextMenu()
+            return
+        }
+        togglePopover()
+    }
+
+    private func showQuickContextMenu() {
+        guard let button = statusItem.button else { return }
+        let menu = NSMenu()
+
+        let metricHeader = NSMenuItem(title: tr("Показатель рядом с питомцем"), action: nil, keyEquivalent: "")
+        metricHeader.isEnabled = false
+        menu.addItem(metricHeader)
+
+        let activeMetric = StatusMetric(rawValue: cachedStatusMetric) ?? .cpu
+        for metric in StatusMetric.allCases {
+            if metric == .gpu && model.snapshot.gpuPercent == nil {
+                continue
+            }
+            let item = NSMenuItem(
+                title: tr(metric.title),
+                action: #selector(selectMetricFromContextMenu(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = metric.rawValue
+            item.state = (metric == activeMetric) ? .on : .off
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        let historyItem = NSMenuItem(title: tr("История") + "…", action: #selector(openDashboardFromContextMenu), keyEquivalent: "h")
+        historyItem.target = self
+        menu.addItem(historyItem)
+
+        let ssdItem = NSMenuItem(title: tr("Здоровье SSD") + "…", action: #selector(openSSDFromContextMenu), keyEquivalent: "")
+        ssdItem.target = self
+        menu.addItem(ssdItem)
+
+        if let candidate = updater.availableCandidate {
+            let updateItem = NSMenuItem(
+                title: tr("Обновить до %@…", candidate.shortSHA),
+                action: #selector(installUpdateFromContextMenu),
+                keyEquivalent: ""
+            )
+            updateItem.target = self
+            menu.addItem(updateItem)
+        } else {
+            let checkItem = NSMenuItem(
+                title: tr("Проверить обновления"),
+                action: #selector(checkUpdatesFromContextMenu),
+                keyEquivalent: ""
+            )
+            checkItem.target = self
+            menu.addItem(checkItem)
+        }
+
+        let settingsItem = NSMenuItem(title: tr("Настройки") + "…", action: #selector(openSettingsFromContextMenu), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(.separator())
+        menu.addItem(withTitle: tr("Выйти"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 4), in: button)
+    }
+
+    @objc private func selectMetricFromContextMenu(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(raw, forKey: AppDefaults.statusMetric)
+    }
+
+    @objc private func openDashboardFromContextMenu() {
+        openDashboard()
+    }
+
+    @objc private func openSSDFromContextMenu() {
+        openSSDHealth()
+    }
+
+    @objc private func openSettingsFromContextMenu() {
+        openSettings()
+    }
+
+    @objc private func checkUpdatesFromContextMenu() {
+        updater.checkForUpdates(manual: true)
+        openSettings()
+    }
+
+    @objc private func installUpdateFromContextMenu() {
+        updater.installAvailableUpdate()
+    }
+
     @objc private func togglePopover() {
         popover.isShown ? closePopover() : showPopover()
     }
@@ -449,9 +642,11 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
     func showPopover() {
         guard let button = statusItem.button else { return }
         model.setSurface(.popover, active: true)
+        updater.checkIfStale()
         let hostingController = NSHostingController(
             rootView: MenuPanel(
                 model: model,
+                updater: updater,
                 onOpenDashboard: { [weak self] in
                     self?.closePopover()
                     self?.openDashboard()
@@ -639,11 +834,18 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
 
     private func refreshAnimation(cpuPercent: Double, frames: [CGImage]? = nil) {
         let frames = frames ?? model.petAnimation ?? CatAsset.cgFrames
+        let resting = model.isPetResting
         let shouldAnimate = cachedAnimationEnabled
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            && !resting
         guard shouldAnimate, !frames.isEmpty else {
             catLayer.removeAnimation(forKey: "catRun")
-            catLayer.contents = frames.first
+            if !frames.isEmpty {
+                let idx = resting ? min(CatSpeedPolicy.restingFrameIndex, frames.count - 1) : 0
+                catLayer.contents = frames[idx]
+            } else {
+                catLayer.contents = nil
+            }
             resetAnimationTiming()
             animationSpeed = nil
             return

@@ -7,18 +7,24 @@ import SwiftUI
 
 enum AppDefaults {
     static let animationEnabled = "animationEnabled"
+    static let restWhenIdle = "restWhenIdle"
     static let historyEnabled = "historyEnabled"
     static let statusMetric = "statusMetric"
     static let detailedProcessInterval = "detailedProcessInterval"
     static let batteryRetentionDays = "batteryRetentionDays"
+    static let smartAlertsEnabled = "smartAlertsEnabled"
+    static let autoCheckUpdates = "autoCheckUpdates"
 
     static func register() {
         UserDefaults.standard.register(defaults: [
             animationEnabled: true,
+            restWhenIdle: true,
             historyEnabled: true,
             statusMetric: StatusMetric.cpu.rawValue,
             detailedProcessInterval: 5,
-            batteryRetentionDays: 0
+            batteryRetentionDays: 0,
+            smartAlertsEnabled: false,
+            autoCheckUpdates: true
         ])
     }
 }
@@ -91,6 +97,7 @@ enum CatAnimationConfig {
 
 enum StatusMetric: String, CaseIterable, Identifiable {
     case cpu
+    case gpu
     case memory
     case network
     case disk
@@ -102,6 +109,7 @@ enum StatusMetric: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .cpu: "CPU"
+        case .gpu: "GPU"
         case .memory: tr("Память")
         case .network: tr("Сеть")
         case .disk: tr("Диск")
@@ -114,6 +122,8 @@ enum StatusMetric: String, CaseIterable, Identifiable {
         switch self {
         case .cpu:
             MetricFormat.percent(snapshot.cpuPercent)
+        case .gpu:
+            snapshot.gpuPercent.map { "GPU \(MetricFormat.percent($0))" } ?? "GPU —"
         case .memory:
             "RAM \(MetricFormat.percent(snapshot.memory.usedFraction * 100))"
         case .network:
@@ -160,6 +170,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var externalSSDHealthError: String?
     @Published private(set) var battery: BatterySnapshot?
     @Published private(set) var usageReport = UsageReport.empty
+    @Published private(set) var isPetResting = false
 
     var hasInternalBattery: Bool {
         battery != nil
@@ -198,6 +209,8 @@ final class AppModel: ObservableObject {
     private var isPreparingForTermination = false
     private var activeSurfaces: Set<ActiveSurface> = []
     private var forceProcessSampleNextTick = false
+    private var idleSince: Date?
+    private var smartAlertTracker = SmartAlertTracker()
 
     private var isProcessSurfaceActive: Bool {
         activeSurfaces.contains(.popover) || activeSurfaces.contains(.dashboard)
@@ -564,11 +577,36 @@ final class AppModel: ObservableObject {
             let sampled = await sampler.sample(includeProcesses: includeProcesses)
             snapshot = sampled
 
+            let restEnabled = UserDefaults.standard.bool(forKey: AppDefaults.restWhenIdle)
+            let restEval = CatSpeedPolicy.evaluateRestState(
+                cpuPercent: sampled.cpuPercent,
+                idleSince: idleSince,
+                now: sampled.timestamp,
+                currentlyResting: isPetResting,
+                restWhenIdleEnabled: restEnabled
+            )
+            idleSince = restEval.updatedIdleSince
+            if isPetResting != restEval.resting {
+                isPetResting = restEval.resting
+            }
+
             if isSSDSurfaceActive && Date().timeIntervalSince(lastSSDHealthRefresh) >= 60 {
                 refreshSSDHealth()
             }
-            if tick == 0 || (includeProcesses && activeSurfaces.contains(.popover)) {
+            if tick == 0 || tick.isMultiple(of: 60) || (includeProcesses && activeSurfaces.contains(.popover)) {
                 ssd = StorageAndPowerSampler.sampleSSD()
+            }
+            if UserDefaults.standard.bool(forKey: AppDefaults.smartAlertsEnabled) {
+                let alertEvents = smartAlertTracker.evaluate(
+                    snapshot: sampled,
+                    ssd: ssd,
+                    now: sampled.timestamp
+                )
+                for event in alertEvents {
+                    SmartAlertNotifier.post(event)
+                }
+            } else {
+                smartAlertTracker.reset()
             }
             if tick == 0 || (battery != nil && tick.isMultiple(of: 5)) || (battery == nil && tick.isMultiple(of: 60)) {
                 battery = StorageAndPowerSampler.sampleBattery()
@@ -625,6 +663,17 @@ final class AppModel: ObservableObject {
         guard [0, 30, 90, 365].contains(days) else { return }
         UserDefaults.standard.set(days, forKey: AppDefaults.batteryRetentionDays)
         Task { await maintainHistory() }
+    }
+
+    func requestImmediateProcessRefresh() {
+        forceProcessSampleNextTick = true
+    }
+
+    func updateRestPreference(enabled: Bool) {
+        if !enabled {
+            idleSince = nil
+            isPetResting = false
+        }
     }
 
     private func maintainHistory() async {

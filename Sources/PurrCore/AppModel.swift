@@ -207,6 +207,7 @@ final class AppModel: ObservableObject {
     private var ssdDebounceTask: Task<Void, Never>?
     private var diskObserver: SSDDiskObserver?
     private var isPreparingForTermination = false
+    private(set) var hasPreparedForTermination = false
     private var activeSurfaces: Set<ActiveSurface> = []
     private var forceProcessSampleNextTick = false
     private var idleSince: Date?
@@ -466,16 +467,43 @@ final class AppModel: ObservableObject {
     }
 
     func prepareForTermination() async {
-        guard !isPreparingForTermination else { return }
+        await withCheckedContinuation { continuation in
+            beginTerminationPreparation {
+                continuation.resume()
+            }
+        }
+    }
+
+    func beginTerminationPreparation(completion: @escaping @Sendable () -> Void) {
+        guard !isPreparingForTermination else {
+            hasPreparedForTermination = true
+            completion()
+            return
+        }
         isPreparingForTermination = true
         monitorTask?.cancel()
         ssdDebounceTask?.cancel()
         let currentBattery = StorageAndPowerSampler.sampleBattery()
         battery = currentBattery
         usageTracker.suspend(at: .now, battery: currentBattery)
-        await persistUsage(reload: false)
-        try? await store?.checkpointAndTruncate()
-        usageLogger.info("Termination: usage state flushed and WAL truncated")
+        let batch = usageTracker.persistenceBatch()
+        usageTracker.acknowledgePersistence(of: batch)
+        hasPreparedForTermination = true
+        guard let store else {
+            completion()
+            return
+        }
+        let logger = usageLogger
+        Task.detached(priority: .userInitiated) {
+            do {
+                try await store.saveUsageBatch(batch)
+                try await store.checkpointAndTruncate()
+                logger.info("Termination: usage state flushed and WAL truncated")
+            } catch {
+                logger.error("Termination flush failed: \(error.localizedDescription, privacy: .public)")
+            }
+            completion()
+        }
     }
 
     func refreshSSDHealthIfStale(threshold: TimeInterval) {

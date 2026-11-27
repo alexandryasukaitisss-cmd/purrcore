@@ -38,7 +38,7 @@ brew install --cask alexandryasukaitisss-cmd/tap/purrcore
 
 ### Вариант 2: Готовый архив из GitHub Releases
 
-Скачай `PurrCore-0.6.2-macos-arm64.zip` из [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), распакуй и перенеси `PurrCore.app` в `/Applications`.
+Скачай `PurrCore-0.6.3-macos-arm64.zip` из [GitHub Releases](https://github.com/alexandryasukaitisss-cmd/purrcore/releases/latest), распакуй и перенеси `PurrCore.app` в `/Applications`.
 
 > [!NOTE]
 > **Первый запуск на macOS (без платной нотаризации Apple):** Готовые сборки подписаны ad-hoc, поэтому при первом запуске Gatekeeper покажет предупреждение *«Apple не удалось подтвердить, что файл «PurrCore» не содержит вредоносного ПО»*. Чтобы открыть один раз:

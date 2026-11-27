@@ -31,7 +31,7 @@ final class AppUpdater: ObservableObject {
         let rawSHA = info?["GitCommitSHA"] as? String
         self.localCommitSHA = CommitUpdateEvaluator.normalizeSHA(rawSHA)
         self.localShortSHA = localCommitSHA.map(CommitUpdateEvaluator.shortSHA) ?? "dev"
-        self.localVersion = (info?["CFBundleShortVersionString"] as? String) ?? "0.6.2"
+        self.localVersion = (info?["CFBundleShortVersionString"] as? String) ?? "0.6.3"
 
         startPeriodicChecks()
     }
@@ -255,16 +255,17 @@ final class AppUpdater: ObservableObject {
                 return
             }
 
-            _ = try? runProcess("/usr/bin/xattr", arguments: ["-dr", "com.apple.quarantine", extractedApp.path])
+            _ = try? runProcess("/usr/bin/xattr", arguments: ["-cr", extractedApp.path])
             try runProcess("/usr/bin/codesign", arguments: ["--verify", "--deep", "--strict", extractedApp.path])
 
             state = .installing(progressText: tr("Перезапускаю обновлённый PurrCore…"))
+            await AppServices.shared.model.prepareForTermination()
             try launchDetachedSwapAndRelaunch(
                 stagingDir: stagingDir,
                 extractedApp: extractedApp,
                 targetApp: targetAppURL
             )
-            NSApp.terminate(nil)
+            scheduleApplicationTermination()
         } catch {
             try? FileManager.default.removeItem(at: stagingDir)
             state = .failed(tr("Ошибка обновления: %@", error.localizedDescription))
@@ -310,10 +311,22 @@ final class AppUpdater: ObservableObject {
         STAGING_DIR=\(shellQuote(stagingDir.path))
 
         i=0
-        while kill -0 "$OLD_PID" 2>/dev/null && [ "$i" -lt 150 ]; do
+        while kill -0 "$OLD_PID" 2>/dev/null && [ "$i" -lt 40 ]; do
           sleep 0.1
           i=$((i + 1))
         done
+        if kill -0 "$OLD_PID" 2>/dev/null; then
+          kill -TERM "$OLD_PID" 2>/dev/null || true
+          j=0
+          while kill -0 "$OLD_PID" 2>/dev/null && [ "$j" -lt 20 ]; do
+            sleep 0.1
+            j=$((j + 1))
+          done
+        fi
+        if kill -0 "$OLD_PID" 2>/dev/null; then
+          kill -KILL "$OLD_PID" 2>/dev/null || true
+          sleep 0.2
+        fi
 
         rm -rf "$BACKUP_APP"
         if [ -d "$TARGET_APP" ]; then
@@ -321,9 +334,9 @@ final class AppUpdater: ObservableObject {
         fi
 
         if /usr/bin/ditto "$NEW_APP" "$TARGET_APP"; then
-          /usr/bin/xattr -dr com.apple.quarantine "$TARGET_APP" >/dev/null 2>&1 || true
+          /usr/bin/xattr -cr "$TARGET_APP" >/dev/null 2>&1 || /usr/bin/xattr -dr com.apple.quarantine "$TARGET_APP" >/dev/null 2>&1 || true
           rm -rf "$BACKUP_APP"
-          /usr/bin/open -n "$TARGET_APP"
+          /usr/bin/open -n "$TARGET_APP" || /usr/bin/open "$TARGET_APP"
           rm -rf "$STAGING_DIR"
         else
           if [ -d "$BACKUP_APP" ]; then
@@ -346,5 +359,16 @@ final class AppUpdater: ObservableObject {
 
     private func shellQuote(_ value: String) -> String {
         "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private func scheduleApplicationTermination() {
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.5) {
+            Darwin.exit(0)
+        }
+        let mainLoop = CFRunLoopGetMain()
+        CFRunLoopPerformBlock(mainLoop, CFRunLoopMode.commonModes.rawValue) {
+            NSApp.terminate(nil)
+        }
+        CFRunLoopWakeUp(mainLoop)
     }
 }

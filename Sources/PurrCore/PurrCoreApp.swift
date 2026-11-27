@@ -222,12 +222,7 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
         }
 
         if !arguments.contains("--allow-multiple"), let bundleID = Bundle.main.bundleIdentifier {
-            let currentPID = ProcessInfo.processInfo.processIdentifier
-            let duplicates = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
-                .filter { $0.processIdentifier != currentPID && !$0.isTerminated }
-            if !duplicates.isEmpty {
-                exit(0)
-            }
+            terminateExistingInstances(bundleID: bundleID)
         }
 
         NSApp.setActivationPolicy(.accessory)
@@ -276,11 +271,18 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        statusController?.closePopoverImmediately()
+        if AppServices.shared.model.hasPreparedForTermination {
+            return .terminateNow
+        }
         guard !terminationReplyPending else { return .terminateLater }
         terminationReplyPending = true
-        Task { @MainActor in
-            await AppServices.shared.model.prepareForTermination()
-            sender.reply(toApplicationShouldTerminate: true)
+        AppServices.shared.model.beginTerminationPreparation {
+            let mainLoop = CFRunLoopGetMain()
+            CFRunLoopPerformBlock(mainLoop, CFRunLoopMode.commonModes.rawValue) {
+                NSApp.reply(toApplicationShouldTerminate: true)
+            }
+            CFRunLoopWakeUp(mainLoop)
         }
         return .terminateLater
     }
@@ -298,6 +300,33 @@ final class PurrCoreAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
+    }
+
+    private func terminateExistingInstances(bundleID: String) {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let duplicates = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .filter { $0.processIdentifier != currentPID && !$0.isTerminated && kill($0.processIdentifier, 0) == 0 }
+        guard !duplicates.isEmpty else { return }
+
+        for app in duplicates {
+            _ = app.terminate()
+        }
+        waitForProcessesToExit(duplicates, timeout: 0.8)
+
+        for app in duplicates where !app.isTerminated && kill(app.processIdentifier, 0) == 0 {
+            _ = app.forceTerminate()
+            _ = kill(app.processIdentifier, SIGKILL)
+        }
+        waitForProcessesToExit(duplicates, timeout: 0.8)
+    }
+
+    private func waitForProcessesToExit(_ apps: [NSRunningApplication], timeout: TimeInterval) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline,
+              apps.contains(where: { kill($0.processIdentifier, 0) == 0 })
+        {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
     }
 
     private func installMainMenu() {
@@ -628,6 +657,13 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         removeDismissMonitors()
         if popover.isShown {
             popover.performClose(nil)
+        }
+    }
+
+    func closePopoverImmediately() {
+        removeDismissMonitors()
+        if popover.isShown {
+            popover.close()
         }
     }
 

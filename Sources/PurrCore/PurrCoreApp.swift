@@ -615,8 +615,8 @@ final class StatusItemController: NSObject, NSPopoverDelegate {
         popover.contentViewController = hostingController
         let fittingHeight = hostingController.view.fittingSize.height
         popover.contentSize = NSSize(
-            width: 376,
-            height: fittingHeight > 100 ? fittingHeight : (model.hasInternalBattery ? 616 : 560)
+            width: 404,
+            height: fittingHeight > 100 ? fittingHeight : (model.hasInternalBattery ? 600 : 545)
         )
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         NSApp.activate(ignoringOtherApps: true)

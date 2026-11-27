@@ -67,9 +67,9 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>0.6.1</string>
+  <string>0.6.2</string>
   <key>CFBundleVersion</key>
-  <string>10</string>
+  <string>11</string>
   <key>GitCommitSHA</key>
   <string>$GIT_SHA</string>
   <key>LSMinimumSystemVersion</key>

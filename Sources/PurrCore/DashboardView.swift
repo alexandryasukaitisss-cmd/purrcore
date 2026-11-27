@@ -2,7 +2,7 @@ import Charts
 import PurrCoreCore
 import SwiftUI
 
-private enum DashboardSection: String, CaseIterable, Identifiable {
+enum DashboardSection: String, CaseIterable, Identifiable {
     case overview
     case cpu
     case memory
@@ -54,7 +54,12 @@ private enum ProcessScope: String, CaseIterable, Identifiable {
 
 struct DashboardView: View {
     @ObservedObject var model: AppModel
-    @State private var selection: DashboardSection? = .overview
+    @State private var selection: DashboardSection?
+
+    init(model: AppModel, initialSection: DashboardSection = .overview) {
+        self.model = model
+        _selection = State(initialValue: initialSection)
+    }
 
     private var activeSection: DashboardSection {
         selection ?? .overview
@@ -69,7 +74,7 @@ struct DashboardView: View {
                 }
             }
             .navigationTitle("PurrCore")
-            .navigationSplitViewColumnWidth(min: 175, ideal: 205, max: 230)
+            .navigationSplitViewColumnWidth(min: 175, ideal: 200, max: 225)
         } detail: {
             VStack(spacing: 0) {
                 dashboardToolbar
@@ -82,17 +87,24 @@ struct DashboardView: View {
     }
 
     private var dashboardToolbar: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(activeSection.title)
-                    .font(.title2.weight(.semibold))
-                Text(activeSection == .usage
-                    ? tr("Фактическое время работы без сна и выключений")
-                    : tr("История хранится локально 7 дней"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        HStack(spacing: 10) {
+            Text(activeSection.title)
+                .font(.system(size: 15.5, weight: .semibold))
+                .fixedSize()
+
+            Rectangle()
+                .fill(Color.primary.opacity(0.12))
+                .frame(width: 1, height: 14)
+
+            Text(activeSection == .usage
+                ? tr("Фактическое время работы без сна и выключений")
+                : tr("История хранится локально 7 дней"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            Spacer(minLength: 12)
+
             if activeSection != .usage {
                 Picker(tr("Период"), selection: $model.selectedRange) {
                     ForEach(HistoryRange.allCases) { range in
@@ -100,12 +112,13 @@ struct DashboardView: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .controlSize(.small)
                 .labelsHidden()
-                .frame(width: 210)
+                .frame(width: 186)
             }
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 18)
+        .frame(height: 50)
     }
 
     @ViewBuilder
@@ -129,6 +142,64 @@ struct DashboardView: View {
     }
 }
 
+private struct LedgerItem: Identifiable {
+    let id = UUID()
+    let title: String
+    let value: String
+    var subtitle: String? = nil
+    var accentColor: Color? = nil
+}
+
+private struct LedgerStripCard: View {
+    let items: [LedgerItem]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 1)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(item.title)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(item.value)
+                        .font(.system(size: 21, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    if let subtitle = item.subtitle {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .bottom) {
+                    if let accent = item.accentColor {
+                        Rectangle()
+                            .fill(accent)
+                            .frame(height: 2)
+                    }
+                }
+            }
+        }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.82))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+}
+
 private struct OverviewDashboard: View {
     @ObservedObject var model: AppModel
 
@@ -144,12 +215,13 @@ private struct OverviewDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 14) {
+            VStack(spacing: 12) {
                 if let error = model.historyError {
                     UsageUnavailableCard(message: error)
                 } else {
                     UsageOverviewCard(report: model.usageReport, showBattery: model.hasInternalBattery)
                 }
+
                 MetricHistoryCard(
                     title: tr("Процессор"),
                     value: MetricFormat.percent(model.snapshot.cpuPercent),
@@ -166,6 +238,7 @@ private struct OverviewDashboard: View {
                         )
                     }
                 )
+
                 if let gpu = model.snapshot.gpuPercent {
                     MetricHistoryCard(
                         title: tr("Графика (GPU)"),
@@ -176,52 +249,52 @@ private struct OverviewDashboard: View {
                         yValue: { $0.gpuPercent ?? 0 }
                     )
                 }
+
                 MetricHistoryCard(
                     title: tr("Память"),
                     value: MetricFormat.bytes(model.snapshot.memory.usedBytes),
                     detail: memoryDetail,
-                    color: .purple,
+                    color: .blue,
                     points: model.displayedHistory,
                     yValue: { Double($0.memoryUsedBytes) }
                 )
+
                 MetricHistoryCard(
                     title: tr("Сеть"),
-                    value: "↓ \(MetricFormat.rate(model.snapshot.network.downloadBytesPerSecond))",
-                    detail: "↑ \(MetricFormat.rate(model.snapshot.network.uploadBytesPerSecond))",
-                    color: .green,
+                    value: "↓ \(MetricFormat.compactRate(model.snapshot.network.downloadBytesPerSecond))",
+                    detail: "↑ \(MetricFormat.compactRate(model.snapshot.network.uploadBytesPerSecond))",
+                    color: .teal,
                     points: model.displayedHistory,
                     yValue: { $0.networkDownloadBytesPerSecond + $0.networkUploadBytesPerSecond }
                 )
+
                 MetricHistoryCard(
                     title: tr("Диск"),
-                    value: tr("чтение %@", String(describing: MetricFormat.rate(model.snapshot.disk.downloadBytesPerSecond))),
-                    detail: tr("запись %@", String(describing: MetricFormat.rate(model.snapshot.disk.uploadBytesPerSecond))),
+                    value: tr("чтение %@", String(describing: MetricFormat.compactRate(model.snapshot.disk.downloadBytesPerSecond))),
+                    detail: tr("запись %@", String(describing: MetricFormat.compactRate(model.snapshot.disk.uploadBytesPerSecond))),
                     color: .orange,
                     points: model.displayedHistory,
                     yValue: { $0.diskReadBytesPerSecond + $0.diskWriteBytesPerSecond }
                 )
 
-                HStack(alignment: .top, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
                     ConsumerList(
                         title: tr("Больше всего процессора"),
                         samples: Array(model.snapshot.processes.sorted { $0.cpuPercent > $1.cpuPercent }.prefix(6)),
+                        isLive: true,
+                        onProcessActionCompleted: { model.requestImmediateProcessRefresh() },
                         value: { MetricFormat.processCPU($0, totalCores: model.snapshot.coreCount) }
                     )
                     ConsumerList(
                         title: tr("Больше всего памяти"),
                         samples: Array(model.snapshot.processes.sorted { $0.residentBytes > $1.residentBytes }.prefix(6)),
+                        isLive: true,
+                        onProcessActionCompleted: { model.requestImmediateProcessRefresh() },
                         value: { MetricFormat.bytes($0.residentBytes) }
                     )
                 }
-
-                if let error = model.historyError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
             }
-            .padding(20)
+            .padding(18)
         }
     }
 }
@@ -237,40 +310,46 @@ private struct UsageDashboard: View {
         max(model.usageReport.daily.map { $0.awakeSeconds / 3_600 }.max() ?? 0, 1)
     }
 
+    private var ledgerItems: [LedgerItem] {
+        var items = [
+            LedgerItem(
+                title: tr("Сегодня без сна"),
+                value: MetricFormat.duration(model.usageReport.todayAwakeSeconds),
+                subtitle: tr("сон и выключение не входят")
+            )
+        ]
+        if model.hasInternalBattery {
+            items.append(
+                LedgerItem(
+                    title: model.usageReport.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд"),
+                    value: shownBatterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—",
+                    subtitle: batterySessionSubtitle
+                )
+            )
+            items.append(
+                LedgerItem(
+                    title: tr("Оценка 0–100%"),
+                    value: model.usageReport.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—",
+                    subtitle: estimateSubtitle
+                )
+            )
+        }
+        return items
+    }
+
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
+            VStack(spacing: 14) {
                 if let error = model.historyError {
                     UsageUnavailableCard(message: error)
                 } else {
-                    HStack(spacing: 14) {
-                        HeroMetric(
-                            title: tr("Сегодня без сна"),
-                            value: MetricFormat.duration(model.usageReport.todayAwakeSeconds),
-                            subtitle: tr("сон и выключение не входят"),
-                            color: .blue
-                        )
-                        if model.hasInternalBattery {
-                            HeroMetric(
-                                title: model.usageReport.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд"),
-                                value: shownBatterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—",
-                                subtitle: batterySessionSubtitle,
-                                color: .green
-                            )
-                            HeroMetric(
-                                title: tr("Оценка 0–100%"),
-                                value: model.usageReport.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—",
-                                subtitle: estimateSubtitle,
-                                color: .orange
-                            )
-                        }
-                    }
+                    LedgerStripCard(items: ledgerItems)
 
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
-                            VStack(alignment: .leading, spacing: 3) {
+                            VStack(alignment: .leading, spacing: 2) {
                                 Text(tr("Последние 7 дней"))
-                                    .font(.headline)
+                                    .font(.system(size: 14, weight: .semibold))
                                 Text(model.hasInternalBattery
                                     ? tr("Фактическое бодрствование и его часть от батареи")
                                     : tr("Фактическое время работы без сна и выключений"))
@@ -281,7 +360,7 @@ private struct UsageDashboard: View {
                             if model.hasInternalBattery {
                                 HStack(spacing: 12) {
                                     UsageLegend(label: tr("Всего"), color: .blue)
-                                    UsageLegend(label: tr("От батареи"), color: .green)
+                                    UsageLegend(label: tr("От батареи"), color: .teal)
                                 }
                             }
                         }
@@ -293,32 +372,34 @@ private struct UsageDashboard: View {
                                     y: .value(tr("Часы"), point.awakeSeconds / 3_600)
                                 )
                                 .position(by: .value(tr("Тип"), tr("Всего")))
-                                .foregroundStyle(.blue)
-                                .cornerRadius(4)
+                                .foregroundStyle(.blue.opacity(0.85))
+                                .cornerRadius(3)
 
                                 BarMark(
                                     x: .value(tr("День"), point.day, unit: .day),
                                     y: .value(tr("Часы"), point.batteryAwakeSeconds / 3_600)
                                 )
                                 .position(by: .value(tr("Тип"), tr("От батареи")))
-                                .foregroundStyle(.green)
-                                .cornerRadius(4)
+                                .foregroundStyle(.teal.opacity(0.85))
+                                .cornerRadius(3)
                             } else {
                                 BarMark(
                                     x: .value(tr("День"), point.day, unit: .day),
                                     y: .value(tr("Часы"), point.awakeSeconds / 3_600)
                                 )
-                                .foregroundStyle(.blue)
-                                .cornerRadius(4)
+                                .foregroundStyle(.blue.opacity(0.85))
+                                .cornerRadius(3)
                             }
                         }
                         .chartYScale(domain: 0...(maximumHours * 1.15))
                         .chartYAxis {
                             AxisMarks(position: .leading) { value in
-                                AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
                                 AxisValueLabel {
                                     if let hours = value.as(Double.self) {
                                         Text(tr("%@ ч", String(describing: hours.formatted(.number.precision(.fractionLength(0...1))))))
+                                            .font(.caption2)
+                                            .monospacedDigit()
                                     }
                                 }
                             }
@@ -328,7 +409,7 @@ private struct UsageDashboard: View {
                                 AxisValueLabel(format: .dateTime.weekday(.abbreviated))
                             }
                         }
-                        .frame(height: 280)
+                        .frame(height: 270)
                     }
                     .cardStyle()
 
@@ -339,10 +420,10 @@ private struct UsageDashboard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .cardStyle()
+                    .cardStyle(padding: 12)
                 }
             }
-            .padding(20)
+            .padding(18)
         }
     }
 
@@ -374,10 +455,10 @@ private struct UsageOverviewCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label(tr("Время работы"), systemImage: "clock.arrow.circlepath")
-                    .font(.headline)
+                    .font(.system(size: 13.5, weight: .semibold))
                 Spacer()
                 Text(tr("сон и выключение исключены"))
                     .font(.caption)
@@ -386,19 +467,16 @@ private struct UsageOverviewCard: View {
             HStack(spacing: 24) {
                 UsageOverviewValue(
                     label: tr("Сегодня"),
-                    value: MetricFormat.duration(report.todayAwakeSeconds),
-                    color: .blue
+                    value: MetricFormat.duration(report.todayAwakeSeconds)
                 )
                 if showBattery {
                     UsageOverviewValue(
                         label: report.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд"),
-                        value: batterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—",
-                        color: .green
+                        value: batterySession.map { MetricFormat.duration($0.awakeSeconds) } ?? "—"
                     )
                     UsageOverviewValue(
                         label: "0–100%",
-                        value: report.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—",
-                        color: .orange
+                        value: report.fullChargeEstimate.map { "≈ " + MetricFormat.duration($0.seconds) } ?? "—"
                     )
                 }
             }
@@ -412,9 +490,9 @@ private struct UsageUnavailableCard: View {
     let message: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             Label(tr("Учёт времени недоступен"), systemImage: "exclamationmark.triangle")
-                .font(.headline)
+                .font(.system(size: 13.5, weight: .semibold))
                 .foregroundStyle(.orange)
             Text(message)
                 .font(.caption)
@@ -428,16 +506,15 @@ private struct UsageUnavailableCard: View {
 private struct UsageOverviewValue: View {
     let label: String
     let value: String
-    let color: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(.system(.title3, design: .rounded, weight: .semibold))
-                .foregroundStyle(color)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.primary)
                 .monospacedDigit()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -449,9 +526,14 @@ private struct UsageLegend: View {
     let color: Color
 
     var body: some View {
-        Label(label, systemImage: "circle.fill")
-            .font(.caption)
-            .foregroundStyle(color)
+        HStack(spacing: 5) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }
 
@@ -470,15 +552,15 @@ private struct ProcessorDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
+            VStack(spacing: 14) {
                 HStack(alignment: .center, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(tr("Общая загрузка"))
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.secondary)
                         Text(MetricFormat.percent(model.snapshot.cpuPercent))
-                            .font(.system(size: 32, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.blue)
+                            .font(.system(size: 26, weight: .semibold))
+                            .foregroundStyle(.primary)
                             .monospacedDigit()
                         Text(tr("Кошка ускоряется вместе с этой величиной · доля от всего Mac"))
                             .font(.caption)
@@ -487,7 +569,7 @@ private struct ProcessorDashboard: View {
                     Spacer()
                     VStack(alignment: .trailing, spacing: 6) {
                         Text(tr("Загрузка по ядрам"))
-                            .font(.caption.weight(.semibold))
+                            .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.secondary)
                         CoreLoadStrip(
                             perCoreCPU: model.snapshot.perCoreCPU,
@@ -516,6 +598,8 @@ private struct ProcessorDashboard: View {
                         ? tr("За выбранный период пока нет сохранённых срезов процессов.")
                         : tr("Собираю подробный срез…"),
                     samples: displayedProcesses,
+                    isLive: scope == .live,
+                    onProcessActionCompleted: { model.requestImmediateProcessRefresh() },
                     value: { MetricFormat.processCPU($0, totalCores: model.snapshot.coreCount) },
                     headerAccessory: {
                         Picker(tr("Режим"), selection: $scope) {
@@ -524,12 +608,13 @@ private struct ProcessorDashboard: View {
                             }
                         }
                         .pickerStyle(.segmented)
+                        .controlSize(.small)
                         .labelsHidden()
-                        .frame(width: 190)
+                        .frame(width: 180)
                     }
                 )
             }
-            .padding(20)
+            .padding(18)
         }
     }
 }
@@ -549,38 +634,58 @@ private struct MemoryDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(tr("Использовано"))
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(MetricFormat.bytes(model.snapshot.memory.usedBytes))
-                            .font(.system(size: 32, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.purple)
-                            .monospacedDigit()
-                        Text(tr("из %@", String(describing: MetricFormat.bytes(model.snapshot.memory.totalBytes))))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Label(
-                        tr("Давление: %@", String(describing: MetricFormat.pressure(model.snapshot.memory.pressure))),
-                        systemImage: "circle.fill"
-                    )
-                    .foregroundStyle(MetricFormat.pressureColor(model.snapshot.memory.pressure))
-                }
-                .cardStyle()
-
+            VStack(spacing: 14) {
                 VStack(spacing: 14) {
+                    HStack(alignment: .firstTextBaseline) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(tr("Использовано"))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(MetricFormat.bytes(model.snapshot.memory.usedBytes))
+                                    .font(.system(size: 26, weight: .semibold))
+                                    .foregroundStyle(.primary)
+                                    .monospacedDigit()
+                                Text(tr("из %@", String(describing: MetricFormat.bytes(model.snapshot.memory.totalBytes))))
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                        }
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(MetricFormat.pressureColor(model.snapshot.memory.pressure))
+                                .frame(width: 7, height: 7)
+                            Text(tr("Давление: %@", String(describing: MetricFormat.pressure(model.snapshot.memory.pressure))))
+                                .font(.callout.weight(.medium))
+                                .foregroundStyle(
+                                    model.snapshot.memory.pressure == .normal
+                                        ? Color.secondary
+                                        : MetricFormat.pressureColor(model.snapshot.memory.pressure)
+                                )
+                        }
+                    }
+
                     MemoryBar(memory: model.snapshot.memory)
-                        .frame(height: 12)
-                    HStack {
-                        MemoryLegend(label: tr("Приложения"), value: model.snapshot.memory.appBytes, color: .purple)
+                        .frame(height: 8)
+
+                    HStack(spacing: 0) {
+                        MemoryLegend(label: tr("Приложения"), value: model.snapshot.memory.appBytes, color: .blue)
+                        MemoryLegendDivider()
                         MemoryLegend(label: tr("Связанная"), value: model.snapshot.memory.wiredBytes, color: .orange)
-                        MemoryLegend(label: tr("Сжатая"), value: model.snapshot.memory.compressedBytes, color: .cyan)
+                        MemoryLegendDivider()
+                        MemoryLegend(label: tr("Сжатая"), value: model.snapshot.memory.compressedBytes, color: .teal)
+                        MemoryLegendDivider()
                         MemoryLegend(label: tr("Кэш"), value: model.snapshot.memory.cachedBytes, color: .secondary)
-                        MemoryLegend(label: "Swap", value: model.snapshot.memory.swapUsedBytes, color: .pink)
+                        MemoryLegendDivider()
+                        MemoryLegend(label: "Swap", value: model.snapshot.memory.swapUsedBytes, color: model.snapshot.memory.swapUsedBytes > 0 ? .orange : .secondary)
+                    }
+                    .background(Color.primary.opacity(0.03))
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .stroke(Color.primary.opacity(0.07), lineWidth: 1)
                     }
                 }
                 .cardStyle()
@@ -588,7 +693,7 @@ private struct MemoryDashboard: View {
                 LargeHistoryChart(
                     title: tr("История памяти"),
                     points: model.displayedHistory,
-                    color: .purple,
+                    color: .blue,
                     yValue: { Double($0.memoryUsedBytes) },
                     yFormat: { MetricFormat.shortBytes(UInt64(max($0, 0))) }
                 )
@@ -597,8 +702,8 @@ private struct MemoryDashboard: View {
                     title: tr("История Swap"),
                     trailingText: MetricFormat.bytes(model.snapshot.memory.swapUsedBytes),
                     points: model.displayedHistory,
-                    color: .pink,
-                    height: 170,
+                    color: .orange,
+                    height: 165,
                     yValue: { Double($0.swapUsedBytes) },
                     yFormat: { MetricFormat.shortBytes(UInt64(max($0, 0))) }
                 )
@@ -612,6 +717,8 @@ private struct MemoryDashboard: View {
                         ? tr("За выбранный период пока нет сохранённых срезов процессов.")
                         : tr("Собираю подробный срез…"),
                     samples: displayedProcesses,
+                    isLive: scope == .live,
+                    onProcessActionCompleted: { model.requestImmediateProcessRefresh() },
                     value: { MetricFormat.bytes($0.residentBytes) },
                     headerAccessory: {
                         Picker(tr("Режим"), selection: $scope) {
@@ -620,12 +727,13 @@ private struct MemoryDashboard: View {
                             }
                         }
                         .pickerStyle(.segmented)
+                        .controlSize(.small)
                         .labelsHidden()
-                        .frame(width: 190)
+                        .frame(width: 180)
                     }
                 )
             }
-            .padding(20)
+            .padding(18)
         }
     }
 }
@@ -649,24 +757,22 @@ private struct ThroughputDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                HStack(spacing: 14) {
-                    HeroMetric(
+            VStack(spacing: 14) {
+                LedgerStripCard(items: [
+                    LedgerItem(
                         title: kind == .network ? tr("Получение") : tr("Чтение"),
-                        value: MetricFormat.rate(read),
-                        subtitle: tr("текущая скорость"),
-                        color: kind == .network ? .green : .orange
-                    )
-                    HeroMetric(
+                        value: MetricFormat.compactRate(read),
+                        subtitle: tr("текущая скорость")
+                    ),
+                    LedgerItem(
                         title: kind == .network ? tr("Отправка") : tr("Запись"),
-                        value: MetricFormat.rate(write),
-                        subtitle: tr("текущая скорость"),
-                        color: .cyan
+                        value: MetricFormat.compactRate(write),
+                        subtitle: tr("текущая скорость")
                     )
-                }
+                ])
                 LargeHistoryChart(
                     points: model.displayedHistory,
-                    color: kind == .network ? .green : .orange,
+                    color: kind == .network ? .teal : .orange,
                     yValue: { point in
                         kind == .network
                             ? point.networkDownloadBytesPerSecond + point.networkUploadBytesPerSecond
@@ -675,7 +781,7 @@ private struct ThroughputDashboard: View {
                     yFormat: { MetricFormat.compactRate($0) }
                 )
             }
-            .padding(20)
+            .padding(18)
         }
     }
 }
@@ -685,11 +791,12 @@ private struct TaskDashboard: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text(tr("Метки задач"))
-                        .font(.title3.weight(.semibold))
+                        .font(.system(size: 14, weight: .semibold))
                     Text(tr("PurrCore хранит только начало/конец задачи и её подпись. Содержимое MemPalace и команд не копируется."))
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -701,7 +808,7 @@ private struct TaskDashboard: View {
                         systemImage: "flag",
                         description: Text(tr("Их можно добавить через purrcorectl из MemPalace или другого рабочего процесса."))
                     )
-                    .frame(maxWidth: .infinity, minHeight: 300)
+                    .frame(maxWidth: .infinity, minHeight: 280)
                 } else {
                     VStack(spacing: 0) {
                         ForEach(model.taskMarkers.reversed()) { marker in
@@ -712,7 +819,7 @@ private struct TaskDashboard: View {
                     .cardStyle(padding: 8)
                 }
             }
-            .padding(20)
+            .padding(18)
         }
     }
 }
@@ -748,23 +855,25 @@ private struct MetricHistoryCard<ExtraHeader: View>: View {
         HStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(title.uppercased())
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Text(value)
-                    .font(.system(.title3, design: .rounded, weight: .semibold))
+                    .font(.system(size: 18, weight: .semibold))
                     .monospacedDigit()
+                    .foregroundStyle(.primary)
                 extraHeader
                 Text(detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.9)
             }
-            .frame(width: 215, alignment: .leading)
+            .frame(width: 256, alignment: .leading)
 
             CompactHistoryChart(points: points, color: color, yValue: yValue)
         }
         .frame(maxWidth: .infinity)
-        .cardStyle()
+        .cardStyle(padding: 14)
     }
 }
 
@@ -801,18 +910,18 @@ private struct CompactHistoryChart: View {
                 y: .value(tr("Значение"), yValue(point))
             )
             .foregroundStyle(
-                LinearGradient(colors: [color.opacity(0.35), color.opacity(0.02)], startPoint: .top, endPoint: .bottom)
+                LinearGradient(colors: [color.opacity(0.24), color.opacity(0.01)], startPoint: .top, endPoint: .bottom)
             )
             LineMark(
                 x: .value(tr("Время"), point.timestamp),
                 y: .value(tr("Значение"), yValue(point))
             )
             .foregroundStyle(color)
-            .lineStyle(.init(lineWidth: 1.6))
+            .lineStyle(.init(lineWidth: 1.5))
         }
         .chartXAxis(.hidden)
         .chartYAxis(.hidden)
-        .frame(height: 76)
+        .frame(height: 68)
     }
 }
 
@@ -821,7 +930,7 @@ private struct LargeHistoryChart: View {
     var trailingText: String? = nil
     let points: [HistoryPoint]
     let color: Color
-    var height: CGFloat = 260
+    var height: CGFloat = 250
     let yValue: (HistoryPoint) -> Double
     let yFormat: (Double) -> String
     var yDomain: ClosedRange<Double>? = nil
@@ -832,13 +941,13 @@ private struct LargeHistoryChart: View {
                 HStack {
                     if let title {
                         Text(title)
-                            .font(.headline)
+                            .font(.system(size: 14, weight: .semibold))
                     }
                     Spacer()
                     if let trailingText {
                         Text(trailingText)
                             .font(.callout.weight(.medium))
-                            .foregroundStyle(color)
+                            .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
                 }
@@ -857,18 +966,18 @@ private struct LargeHistoryChart: View {
                 y: .value(tr("Значение"), yValue(point))
             )
             .foregroundStyle(
-                LinearGradient(colors: [color.opacity(0.28), color.opacity(0.015)], startPoint: .top, endPoint: .bottom)
+                LinearGradient(colors: [color.opacity(0.22), color.opacity(0.01)], startPoint: .top, endPoint: .bottom)
             )
             LineMark(
                 x: .value(tr("Время"), point.timestamp),
                 y: .value(tr("Значение"), yValue(point))
             )
             .foregroundStyle(color)
-            .lineStyle(.init(lineWidth: 2))
+            .lineStyle(.init(lineWidth: 1.8))
         }
         .chartYAxis {
             AxisMarks(position: .leading) { value in
-                AxisGridLine().foregroundStyle(.secondary.opacity(0.15))
+                AxisGridLine().foregroundStyle(.secondary.opacity(0.14))
                 AxisValueLabel {
                     if let number = value.as(Double.self) {
                         Text(yFormat(number))
@@ -887,35 +996,13 @@ private struct LargeHistoryChart: View {
     }
 }
 
-private struct HeroMetric: View {
-    let title: String
-    let value: String
-    let subtitle: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.system(size: 32, weight: .semibold, design: .rounded))
-                .foregroundStyle(color)
-                .monospacedDigit()
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardStyle()
-    }
-}
-
 private struct ConsumerList<HeaderAccessory: View>: View {
     let title: String
     var subtitle: String? = nil
     var emptyText: String = tr("Собираю подробный срез…")
     let samples: [ProcessGroupSample]
+    var isLive: Bool = false
+    var onProcessActionCompleted: (() -> Void)? = nil
     let value: (ProcessGroupSample) -> String
     let headerAccessory: HeaderAccessory
 
@@ -924,6 +1011,8 @@ private struct ConsumerList<HeaderAccessory: View>: View {
         subtitle: String? = nil,
         emptyText: String = tr("Собираю подробный срез…"),
         samples: [ProcessGroupSample],
+        isLive: Bool = false,
+        onProcessActionCompleted: (() -> Void)? = nil,
         value: @escaping (ProcessGroupSample) -> String,
         @ViewBuilder headerAccessory: () -> HeaderAccessory
     ) {
@@ -931,16 +1020,18 @@ private struct ConsumerList<HeaderAccessory: View>: View {
         self.subtitle = subtitle
         self.emptyText = emptyText
         self.samples = samples
+        self.isLive = isLive
+        self.onProcessActionCompleted = onProcessActionCompleted
         self.value = value
         self.headerAccessory = headerAccessory()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 11) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.headline)
+                        .font(.system(size: 14, weight: .semibold))
                     if let subtitle {
                         Text(subtitle)
                             .font(.caption)
@@ -952,26 +1043,18 @@ private struct ConsumerList<HeaderAccessory: View>: View {
             }
             if samples.isEmpty {
                 Text(emptyText)
+                    .font(.callout)
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 16)
+                    .padding(.vertical, 14)
             } else {
-                ForEach(samples) { sample in
-                    HStack(spacing: 9) {
-                        Image(systemName: sample.category.symbol)
-                            .foregroundStyle(sample.category.color)
-                            .frame(width: 20)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(tr(sample.displayName))
-                                .lineLimit(1)
-                            Text(tr(sample.explanation) + (sample.processCount > 1 ? tr(" · %@ процессов", String(describing: sample.processCount)) : ""))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                        Text(value(sample))
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                VStack(spacing: 2) {
+                    ForEach(samples) { sample in
+                        DashboardConsumerRow(
+                            sample: sample,
+                            formattedValue: value(sample),
+                            isLive: isLive,
+                            onProcessActionCompleted: onProcessActionCompleted
+                        )
                     }
                 }
             }
@@ -981,12 +1064,80 @@ private struct ConsumerList<HeaderAccessory: View>: View {
     }
 }
 
+private struct DashboardConsumerRow: View {
+    let sample: ProcessGroupSample
+    let formattedValue: String
+    let isLive: Bool
+    let onProcessActionCompleted: (() -> Void)?
+
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: sample.category.symbol)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(sample.category.color.opacity(0.85))
+                .frame(width: 18)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(tr(sample.displayName))
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                Text(tr(sample.explanation) + (sample.processCount > 1 ? tr(" · %@ процессов", String(describing: sample.processCount)) : ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            if isLive {
+                Menu {
+                    ProcessActionMenuItems(process: sample, onCompleted: onProcessActionCompleted)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .frame(width: 20, height: 20)
+                .opacity(isHovered ? 0.95 : 0.24)
+                .help(tr("Действия с процессом"))
+            }
+
+            Text(formattedValue)
+                .font(.system(size: 12.5, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isHovered && isLive ? Color.primary.opacity(0.045) : .clear)
+        )
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .contextMenu {
+            if isLive {
+                ProcessActionMenuItems(process: sample, onCompleted: onProcessActionCompleted)
+            }
+        }
+    }
+}
+
 private extension ConsumerList where HeaderAccessory == EmptyView {
     init(
         title: String,
         subtitle: String? = nil,
         emptyText: String = tr("Собираю подробный срез…"),
         samples: [ProcessGroupSample],
+        isLive: Bool = false,
+        onProcessActionCompleted: (() -> Void)? = nil,
         value: @escaping (ProcessGroupSample) -> String
     ) {
         self.init(
@@ -994,9 +1145,19 @@ private extension ConsumerList where HeaderAccessory == EmptyView {
             subtitle: subtitle,
             emptyText: emptyText,
             samples: samples,
+            isLive: isLive,
+            onProcessActionCompleted: onProcessActionCompleted,
             value: value,
             headerAccessory: { EmptyView() }
         )
+    }
+}
+
+private struct MemoryLegendDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.07))
+            .frame(width: 1)
     }
 }
 
@@ -1007,13 +1168,23 @@ private struct MemoryLegend: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Label(label, systemImage: "circle.fill")
-                .font(.caption)
-                .foregroundStyle(color)
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                Text(label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
             Text(MetricFormat.bytes(value))
-                .font(.callout.weight(.medium))
+                .font(.system(size: 13, weight: .semibold))
                 .monospacedDigit()
+                .foregroundStyle(.primary)
+                .lineLimit(1)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -1034,6 +1205,7 @@ private struct TaskMarkerRow: View {
                 .foregroundStyle(marker.kind == .begin ? .blue : .green)
             VStack(alignment: .leading, spacing: 2) {
                 Text(marker.label)
+                    .font(.system(size: 13, weight: .medium))
                 Text("\(marker.source) · \(marker.timestamp.formatted(date: .abbreviated, time: .standard))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1041,8 +1213,11 @@ private struct TaskMarkerRow: View {
             Spacer()
             if let nearestPoint {
                 Text("CPU \(MetricFormat.percent(nearestPoint.cpuPercent))")
+                    .font(.caption)
                     .monospacedDigit()
+                    .foregroundStyle(.secondary)
                 Text(MetricFormat.bytes(nearestPoint.memoryUsedBytes))
+                    .font(.caption.weight(.medium))
                     .monospacedDigit()
             }
         }
@@ -1051,14 +1226,14 @@ private struct TaskMarkerRow: View {
 }
 
 private extension View {
-    func cardStyle(padding: CGFloat = 16) -> some View {
+    func cardStyle(padding: CGFloat = 15) -> some View {
         self
             .padding(padding)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.72))
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.82))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
             }
     }
 }

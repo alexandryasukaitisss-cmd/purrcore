@@ -51,7 +51,7 @@ struct MenuPanel: View {
             Divider()
             footer
         }
-        .frame(width: 376)
+        .frame(width: 404)
         .background(.ultraThinMaterial)
         .onChange(of: statusMetric) { _, _ in
             manualSortOverride = nil
@@ -64,6 +64,7 @@ struct MenuPanel: View {
         case .available(let candidate):
             HStack(spacing: 8) {
                 Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 13))
                     .foregroundStyle(.blue)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(tr("Доступно обновление (%@)", candidate.shortSHA))
@@ -81,10 +82,11 @@ struct MenuPanel: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .fixedSize()
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(Color.blue.opacity(0.10))
+            .padding(.vertical, 8)
+            .background(Color.blue.opacity(0.09))
             .help(candidate.commitTitle)
             Divider()
         case .installing(let progressText):
@@ -98,8 +100,8 @@ struct MenuPanel: View {
                 Spacer()
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .background(Color.blue.opacity(0.08))
+            .padding(.vertical, 8)
+            .background(Color.blue.opacity(0.07))
             Divider()
         default:
             EmptyView()
@@ -107,7 +109,7 @@ struct MenuPanel: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 9) {
             AnimatedPetView(
                 cpuPercent: model.snapshot.cpuPercent,
                 animationEnabled: animationEnabled,
@@ -115,23 +117,27 @@ struct MenuPanel: View {
                 reduceMotion: reduceMotion,
                 customFrames: model.petAnimation
             )
-            .frame(width: 76, height: 38)
+            .frame(width: 52, height: 26)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("PurrCore")
-                    .font(.headline)
+                    .font(.system(size: 14, weight: .semibold))
                 Text(model.isPetResting
                     ? tr("питомец дремлет · нагрузка низкая")
                     : tr("питомец бежит в темпе нагрузки"))
-                    .font(.caption)
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.88)
             }
+
             Spacer(minLength: 6)
+
             VStack(alignment: .trailing, spacing: 4) {
                 Text(MetricFormat.percent(model.snapshot.cpuPercent))
-                    .font(.system(.title2, design: .rounded, weight: .semibold))
+                    .font(.system(size: 20, weight: .semibold))
                     .monospacedDigit()
+                    .foregroundStyle(.primary)
                 CoreLoadStrip(
                     perCoreCPU: model.snapshot.perCoreCPU,
                     coreClusters: model.snapshot.coreClusters,
@@ -139,38 +145,48 @@ struct MenuPanel: View {
                     compact: true
                 )
             }
+            .fixedSize()
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     private var summary: some View {
-        VStack(spacing: 12) {
-            HStack {
-                MetricSummary(
-                    label: tr("Память"),
-                    value: "\(MetricFormat.bytes(model.snapshot.memory.usedBytes)) / \(MetricFormat.bytes(model.snapshot.memory.totalBytes))",
-                    color: .purple
-                )
-                Spacer()
-                HStack(spacing: 5) {
-                    Circle()
-                        .fill(MetricFormat.pressureColor(model.snapshot.memory.pressure))
-                        .frame(width: 7, height: 7)
-                    Text(MetricFormat.pressure(model.snapshot.memory.pressure))
+        VStack(spacing: 11) {
+            VStack(spacing: 5) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(tr("Память"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Text("\(MetricFormat.bytes(model.snapshot.memory.usedBytes)) / \(MetricFormat.bytes(model.snapshot.memory.totalBytes))")
+                        .font(.system(size: 12.5, weight: .semibold))
+                        .monospacedDigit()
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(MetricFormat.pressureColor(model.snapshot.memory.pressure))
+                            .frame(width: 6, height: 6)
+                        Text(MetricFormat.pressure(model.snapshot.memory.pressure))
+                            .font(.caption)
+                            .foregroundStyle(
+                                model.snapshot.memory.pressure == .normal
+                                    ? Color.secondary
+                                    : MetricFormat.pressureColor(model.snapshot.memory.pressure)
+                            )
+                    }
                 }
-            }
 
-            VStack(spacing: 5) {
                 MemoryBar(memory: model.snapshot.memory)
+
                 if model.snapshot.memory.swapUsedBytes > 0 {
+                    let swapElevated = model.snapshot.memory.pressure != .normal && model.snapshot.memory.swapUsedBytes >= 1_073_741_824
                     HStack {
                         Text("Swap")
                             .foregroundStyle(.secondary)
                         Spacer()
                         Text(MetricFormat.bytes(model.snapshot.memory.swapUsedBytes))
-                            .foregroundStyle(.pink)
+                            .foregroundStyle(swapElevated ? Color.orange : Color.secondary)
                     }
                     .font(.caption2)
                     .monospacedDigit()
@@ -178,8 +194,9 @@ struct MenuPanel: View {
             }
 
             if let ssd = model.ssd {
-                VStack(spacing: 6) {
-                    HStack {
+                let lowDisk = ssd.totalBytes > 0 && ssd.freeBytes < SmartAlertTracker.lowDiskThresholdBytes
+                VStack(spacing: 5) {
+                    HStack(alignment: .firstTextBaseline) {
                         Text("SSD")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -187,74 +204,127 @@ struct MenuPanel: View {
                         Text("\(MetricFormat.bytes(ssd.usedBytes)) / \(MetricFormat.bytes(ssd.totalBytes))")
                             .font(.caption)
                             .monospacedDigit()
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(lowDisk ? Color.orange : Color.secondary)
                             .lineLimit(1)
                     }
-                    CapacityBar(fraction: ssd.usedFraction, color: .blue)
+                    CapacityBar(fraction: ssd.usedFraction, color: lowDisk ? .orange : .blue.opacity(0.82))
                 }
             }
 
             if let battery = model.battery {
                 HStack(spacing: 5) {
                     Image(systemName: batterySymbol(for: battery))
+                        .font(.system(size: 11))
                     Text(batteryText(for: battery))
                     Spacer()
                 }
                 .font(.caption)
+                .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .accessibilityLabel(batteryText(for: battery))
             }
 
             usageSummary
 
-            HStack(spacing: model.snapshot.gpuPercent != nil ? 12 : 18) {
-                if let gpu = model.snapshot.gpuPercent {
-                    MetricSummary(label: "GPU", value: MetricFormat.percent(gpu), color: .indigo)
-                }
-                MetricSummary(label: tr("Сеть ↓"), value: MetricFormat.rate(model.snapshot.network.downloadBytesPerSecond), color: .green)
-                MetricSummary(label: tr("Диск"), value: MetricFormat.rate(model.snapshot.disk.downloadBytesPerSecond + model.snapshot.disk.uploadBytesPerSecond), color: .orange)
-                MetricSummary(label: tr("Тепло"), value: MetricFormat.thermal(model.snapshot.thermalState), color: .secondary)
-            }
+            telemetryLedgerStrip
 
             liveWarningBanner
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+    }
+
+    private var telemetryLedgerStrip: some View {
+        var cells: [(label: String, value: String, color: Color)] = []
+        if let gpu = model.snapshot.gpuPercent {
+            cells.append(("GPU", MetricFormat.percent(gpu), .primary))
+        }
+        cells.append((tr("Сеть ↓"), MetricFormat.compactRate(model.snapshot.network.downloadBytesPerSecond), .primary))
+        cells.append((tr("Диск"), MetricFormat.compactRate(model.snapshot.disk.downloadBytesPerSecond + model.snapshot.disk.uploadBytesPerSecond), .primary))
+        cells.append((tr("Тепло"), MetricFormat.thermal(model.snapshot.thermalState), MetricFormat.thermalColor(model.snapshot.thermalState)))
+
+        return HStack(spacing: 0) {
+            ForEach(Array(cells.enumerated()), id: \.offset) { index, cell in
+                if index > 0 {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 1)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(cell.label)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Text(cell.value)
+                        .font(.system(size: 12, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundStyle(cell.color)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(Color.primary.opacity(0.035))
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
     }
 
     @ViewBuilder
     private var liveWarningBanner: some View {
         if model.snapshot.memory.pressure == .critical {
             let leader = model.snapshot.processes.max(by: { $0.residentBytes < $1.residentBytes })
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                Text(leader.map { tr("Память критична · лидер: %@ (%@)", tr($0.displayName), MetricFormat.shortBytes($0.residentBytes)) }
-                    ?? tr("Критическое давление памяти macOS"))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .font(.caption2)
-            .foregroundStyle(.red)
+            warningStrip(
+                symbol: "exclamationmark.triangle.fill",
+                text: leader.map { tr("Память критична · лидер: %@ (%@)", tr($0.displayName), MetricFormat.shortBytes($0.residentBytes)) }
+                    ?? tr("Критическое давление памяти macOS"),
+                color: .red
+            )
         } else if model.snapshot.thermalState == .serious || model.snapshot.thermalState == .critical {
-            HStack(spacing: 6) {
-                Image(systemName: "flame.fill")
-                    .foregroundStyle(.orange)
-                Text(tr("Mac ограничивает частоты из-за нагрева"))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .font(.caption2)
-            .foregroundStyle(.orange)
+            warningStrip(
+                symbol: "flame.fill",
+                text: tr("Mac ограничивает частоты из-за нагрева"),
+                color: .orange
+            )
         } else if let ssd = model.ssd, ssd.totalBytes > 0, ssd.freeBytes < SmartAlertTracker.lowDiskThresholdBytes {
-            HStack(spacing: 6) {
-                Image(systemName: "internaldrive.trianglebadge.exclamationmark")
-                    .foregroundStyle(.orange)
-                Text(tr("Свободно на SSD всего %@", MetricFormat.shortBytes(ssd.freeBytes)))
-                    .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .font(.caption2)
-            .foregroundStyle(.orange)
+            warningStrip(
+                symbol: "internaldrive.trianglebadge.exclamationmark",
+                text: tr("Свободно на SSD всего %@", MetricFormat.shortBytes(ssd.freeBytes)),
+                color: .orange
+            )
+        }
+    }
+
+    private func warningStrip(symbol: String, text: String, color: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .font(.system(size: 11))
+                .foregroundStyle(color)
+            Text(text)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .overlay(alignment: .leading) {
+            UnevenRoundedRectangle(
+                topLeadingRadius: 6,
+                bottomLeadingRadius: 6,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 0,
+                style: .continuous
+            )
+            .fill(color)
+            .frame(width: 2.5)
         }
     }
 
@@ -272,12 +342,14 @@ struct MenuPanel: View {
             let batterySession = model.usageReport.currentBatterySession ?? model.usageReport.latestBatterySession
             let dischargeLabel = model.usageReport.currentBatterySession == nil ? tr("Последний разряд") : tr("Этот разряд")
 
-            VStack(spacing: 6) {
-                HStack(spacing: 6) {
+            VStack(spacing: 5) {
+                HStack(spacing: 5) {
                     Image(systemName: "clock")
+                        .font(.system(size: 11))
                     Text(tr("Сегодня без сна"))
                     Spacer()
                     Text(MetricFormat.compactDuration(model.usageReport.todayAwakeSeconds))
+                        .fontWeight(.medium)
                         .foregroundStyle(.primary)
                 }
 
@@ -285,11 +357,13 @@ struct MenuPanel: View {
                     HStack(spacing: 8) {
                         Text(dischargeLabel)
                         Text(batterySession.map { MetricFormat.compactDuration($0.awakeSeconds) } ?? "—")
-                            .foregroundStyle(.green)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.primary)
                         Spacer()
-                        Text("0–100")
+                        Text("0–100%")
                         Text(model.usageReport.fullChargeEstimate.map { "≈ " + MetricFormat.compactDuration($0.seconds) } ?? "—")
-                            .foregroundStyle(.orange)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.primary)
                     }
                 }
             }
@@ -327,40 +401,44 @@ struct MenuPanel: View {
     }
 
     private var topConsumers: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Text(tr("КТО СЕЙЧАС ЕСТ РЕСУРСЫ"))
-                    .font(.caption.weight(.semibold))
+                    .font(.system(size: 10.5, weight: .semibold))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 Spacer()
                 HStack(spacing: 2) {
                     sortChip(title: "CPU", mode: .cpu)
                     sortChip(title: tr("Память"), mode: .memory)
                 }
                 .padding(2)
-                .background(Color.secondary.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .background(Color.primary.opacity(0.07))
+                .clipShape(RoundedRectangle(cornerRadius: 5.5, style: .continuous))
             }
 
             if topProcesses.isEmpty {
                 Text(tr("Собираю первый подробный срез…"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 10)
             } else {
-                ForEach(topProcesses) { process in
-                    ProcessCompactRow(
-                        process: process,
-                        totalCores: model.snapshot.coreCount,
-                        sortMode: activeProcessSort,
-                        onProcessActionCompleted: {
-                            model.requestImmediateProcessRefresh()
-                        }
-                    )
+                VStack(spacing: 2) {
+                    ForEach(topProcesses) { process in
+                        ProcessCompactRow(
+                            process: process,
+                            totalCores: model.snapshot.coreCount,
+                            sortMode: activeProcessSort,
+                            onProcessActionCompleted: {
+                                model.requestImmediateProcessRefresh()
+                            }
+                        )
+                    }
                 }
             }
         }
-        .padding(16)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
     }
 
     private func sortChip(title: String, mode: ProcessHistorySort) -> some View {
@@ -369,41 +447,81 @@ struct MenuPanel: View {
             manualSortOverride = mode
         } label: {
             Text(title)
-                .font(.caption2.weight(selected ? .semibold : .regular))
+                .font(.system(size: 11, weight: selected ? .semibold : .regular))
                 .foregroundStyle(selected ? .primary : .secondary)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 2)
-                .background(
-                    RoundedRectangle(cornerRadius: 4.5, style: .continuous)
-                        .fill(selected ? Color(nsColor: .controlBackgroundColor) : .clear)
-                )
+                .fixedSize()
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background {
+                    if selected {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor))
+                            .shadow(color: .black.opacity(0.08), radius: 1, x: 0, y: 0.5)
+                    }
+                }
         }
         .buttonStyle(.plain)
     }
 
     private var footer: some View {
-        HStack {
-            Button(tr("История")) {
+        HStack(spacing: 4) {
+            PopoverFooterButton(title: tr("История"), symbol: "chart.xyaxis.line") {
                 NSApp.activate(ignoringOtherApps: true)
                 onOpenDashboard()
             }
             .keyboardShortcut("h")
 
-            Button("SSD") {
+            PopoverFooterButton(title: "SSD", symbol: "internaldrive") {
                 NSApp.activate(ignoringOtherApps: true)
                 onOpenSSDHealth()
             }
 
-            Button(tr("Настройки")) {
+            PopoverFooterButton(title: tr("Настройки"), symbol: "gearshape") {
                 NSApp.activate(ignoringOtherApps: true)
                 onOpenSettings()
             }
-            Spacer()
-            Button(tr("Выйти"), action: onQuit)
+            .keyboardShortcut(",")
+
+            Spacer(minLength: 6)
+
+            PopoverFooterButton(title: tr("Выйти"), symbol: nil, action: onQuit)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+}
+
+private struct PopoverFooterButton: View {
+    let title: String
+    let symbol: String?
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if let symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: 11, weight: .medium))
+                }
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .fixedSize()
+            }
+            .foregroundStyle(isHovered ? .primary : .secondary)
+            .padding(.horizontal, 8)
+            .frame(height: 26)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(isHovered ? Color.primary.opacity(0.08) : .clear)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .padding(14)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 }
 
@@ -461,17 +579,17 @@ struct CoreLoadStrip: View {
 
     var body: some View {
         let count = totalCores
-        let pillWidth: CGFloat = compact ? (count > 14 ? 3 : 4) : (count > 16 ? 6 : 8)
+        let pillWidth: CGFloat = compact ? (count > 14 ? 3 : 3.5) : (count > 16 ? 6 : 8)
         let pillHeight: CGFloat = compact ? 9 : 18
-        let spacing: CGFloat = compact ? (count > 14 ? 1.5 : 2) : 3
+        let spacing: CGFloat = compact ? 1.5 : 3
 
-        HStack(spacing: compact ? 5 : 8) {
+        HStack(spacing: compact ? 4 : 8) {
             if hasClusters {
-                HStack(spacing: compact ? 4 : 7) {
+                HStack(spacing: compact ? 3.5 : 7) {
                     clusterGroup(label: "P", loads: performanceLoads, pillWidth: pillWidth, pillHeight: pillHeight, spacing: spacing)
                     Circle()
-                        .fill(Color.secondary.opacity(0.4))
-                        .frame(width: 2.5, height: 2.5)
+                        .fill(Color.secondary.opacity(0.35))
+                        .frame(width: 2, height: 2)
                     clusterGroup(label: "E", loads: efficiencyLoads, pillWidth: pillWidth, pillHeight: pillHeight, spacing: spacing)
                 }
             } else {
@@ -481,7 +599,9 @@ struct CoreLoadStrip: View {
                 .font(compact ? .caption2 : .caption)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
+                .fixedSize()
         }
+        .fixedSize()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(tr("Загружено %@ из %@ ядер", String(describing: busyCores), String(describing: totalCores)))
         .help(helpDescription)
@@ -490,7 +610,7 @@ struct CoreLoadStrip: View {
     private func clusterGroup(label: String, loads: [Double], pillWidth: CGFloat, pillHeight: CGFloat, spacing: CGFloat) -> some View {
         HStack(spacing: compact ? 2 : 4) {
             Text(label)
-                .font(.system(size: compact ? 8.5 : 10, weight: .semibold, design: .rounded))
+                .font(.system(size: compact ? 8.5 : 10, weight: .semibold))
                 .foregroundStyle(.secondary)
             barsRow(loads: loads, pillWidth: pillWidth, pillHeight: pillHeight, spacing: spacing)
         }
@@ -500,14 +620,14 @@ struct CoreLoadStrip: View {
         HStack(spacing: spacing) {
             ForEach(Array(loads.enumerated()), id: \.offset) { _, load in
                 if compact {
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                        .fill(MetricFormat.coreLoadColor(load).opacity(load >= 35 ? 0.95 : 0.72))
+                    RoundedRectangle(cornerRadius: 1.2, style: .continuous)
+                        .fill(MetricFormat.coreLoadColor(load).opacity(load >= 35 ? 0.95 : 0.68))
                         .frame(width: pillWidth, height: pillHeight)
                 } else {
                     ZStack(alignment: .bottom) {
-                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                            .fill(Color.secondary.opacity(0.16))
-                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
+                            .fill(Color.secondary.opacity(0.15))
+                        RoundedRectangle(cornerRadius: 2, style: .continuous)
                             .fill(MetricFormat.coreLoadColor(load))
                             .frame(height: max(3, pillHeight * min(max(load / 100, 0), 1)))
                     }
@@ -519,25 +639,6 @@ struct CoreLoadStrip: View {
     }
 }
 
-private struct MetricSummary: View {
-    let label: String
-    let value: String
-    let color: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(.callout.weight(.medium))
-                .monospacedDigit()
-                .foregroundStyle(color)
-                .lineLimit(1)
-        }
-    }
-}
-
 struct MemoryBar: View {
     let memory: MemorySnapshot
 
@@ -545,15 +646,15 @@ struct MemoryBar: View {
         GeometryReader { geometry in
             let total = max(Double(memory.totalBytes), 1)
             HStack(spacing: 1) {
-                segment(width: geometry.size.width * Double(memory.appBytes) / total, color: .purple)
-                segment(width: geometry.size.width * Double(memory.wiredBytes) / total, color: .orange)
-                segment(width: geometry.size.width * Double(memory.compressedBytes) / total, color: .cyan)
+                segment(width: geometry.size.width * Double(memory.appBytes) / total, color: .blue.opacity(0.85))
+                segment(width: geometry.size.width * Double(memory.wiredBytes) / total, color: .orange.opacity(0.85))
+                segment(width: geometry.size.width * Double(memory.compressedBytes) / total, color: .teal.opacity(0.85))
                 Spacer(minLength: 0)
             }
-            .background(Color.secondary.opacity(0.16))
-            .clipShape(Capsule())
+            .background(Color.primary.opacity(0.09))
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
         }
-        .frame(height: 8)
+        .frame(height: 6)
         .accessibilityLabel(tr("Использовано памяти %@", String(describing: MetricFormat.percent(memory.usedFraction * 100))))
     }
 
@@ -571,10 +672,37 @@ struct CapacityBar: View {
             color
                 .frame(width: geometry.size.width * min(max(fraction, 0), 1))
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.16))
-                .clipShape(Capsule())
+                .background(Color.primary.opacity(0.09))
+                .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
         }
-        .frame(height: 8)
+        .frame(height: 6)
+    }
+}
+
+struct ProcessActionMenuItems: View {
+    let process: ProcessGroupSample
+    var onCompleted: (() -> Void)? = nil
+
+    var body: some View {
+        if process.bundlePath != nil {
+            Button(tr("Показать в Finder")) {
+                ProcessActions.revealInFinder(process)
+            }
+        }
+        Button(tr("Открыть Мониторинг системы")) {
+            ProcessActions.openActivityMonitor()
+        }
+        if process.canTerminate {
+            Divider()
+            Button(tr("Завершить")) {
+                ProcessActions.quit(process)
+                onCompleted?()
+            }
+            Button(tr("Принудительно завершить…"), role: .destructive) {
+                ProcessActions.confirmAndForceQuit(process)
+                onCompleted?()
+            }
+        }
     }
 }
 
@@ -589,72 +717,61 @@ struct ProcessCompactRow: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: process.category.symbol)
-                .foregroundStyle(process.category.color)
-                .frame(width: 18)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(process.category.color.opacity(0.85))
+                .frame(width: 16)
+
             VStack(alignment: .leading, spacing: 1) {
                 Text(tr(process.displayName))
+                    .font(.system(size: 12.5, weight: .medium))
                     .lineLimit(1)
                 Text(tr(process.explanation))
-                    .font(.caption2)
+                    .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+
             Spacer(minLength: 4)
-            if isHovered {
-                Menu {
-                    actionMenuItems
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help(tr("Действия с процессом"))
+
+            Menu {
+                ProcessActionMenuItems(process: process, onCompleted: onProcessActionCompleted)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20, height: 20)
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 20, height: 20)
+            .opacity(isHovered ? 0.95 : 0.24)
+            .help(tr("Действия с процессом"))
+
             Text(MetricFormat.percent(process.cpuPercent))
+                .font(.system(size: 12, weight: sortMode == .cpu ? .semibold : .regular))
                 .monospacedDigit()
-                .fontWeight(sortMode == .cpu ? .medium : .regular)
                 .foregroundStyle(sortMode == .cpu ? .primary : .secondary)
+                .frame(width: 46, alignment: .trailing)
+
             Text(MetricFormat.bytes(process.residentBytes))
+                .font(.system(size: 12, weight: sortMode == .memory ? .semibold : .regular))
                 .monospacedDigit()
-                .fontWeight(sortMode == .memory ? .medium : .regular)
                 .foregroundStyle(sortMode == .memory ? .primary : .secondary)
                 .frame(width: 68, alignment: .trailing)
         }
-        .font(.callout)
-        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(isHovered ? Color.primary.opacity(0.05) : .clear)
+        )
         .contentShape(Rectangle())
         .onHover { hovering in
             isHovered = hovering
         }
         .contextMenu {
-            actionMenuItems
+            ProcessActionMenuItems(process: process, onCompleted: onProcessActionCompleted)
         }
         .help(MetricFormat.processCPU(process, totalCores: totalCores))
-    }
-
-    @ViewBuilder
-    private var actionMenuItems: some View {
-        if process.bundlePath != nil {
-            Button(tr("Показать в Finder")) {
-                ProcessActions.revealInFinder(process)
-            }
-        }
-        Button(tr("Открыть Мониторинг системы")) {
-            ProcessActions.openActivityMonitor()
-        }
-        if process.canTerminate {
-            Divider()
-            Button(tr("Завершить")) {
-                ProcessActions.quit(process)
-                onProcessActionCompleted?()
-            }
-            Button(tr("Принудительно завершить…"), role: .destructive) {
-                ProcessActions.confirmAndForceQuit(process)
-                onProcessActionCompleted?()
-            }
-        }
     }
 }

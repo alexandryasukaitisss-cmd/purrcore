@@ -455,3 +455,6 @@
 "Мало свободного места на SSD" = "Low SSD Free Space";
 "На системном диске осталось всего %@." = "Only %@ free on the startup disk.";
 "На системном диске осталось меньше 15 ГБ." = "Less than 15 GB free on the startup disk.";
+"Скопировано" = "Copied";
+"2. Задание скопировано" = "2. Prompt copied";
+"Свой питомец по фото (через Codex)" = "Custom pet from photo (via Codex)";
